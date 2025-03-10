@@ -3,7 +3,9 @@ import torch.nn.functional as F
 import torch.nn as nn
 from torch.autograd import Variable
 # import sys
-
+import sys
+import os
+sys.path.append(os.getcwd())
 # import numpy as np
 import tqdm
 import pdb, os, argparse
@@ -22,10 +24,10 @@ data_root = project_root +'/datasets/RS-SOD/'
 formatted_time =datetime.now().strftime('%y%m%d_%H%M')
 
 # ===============================================================
-torch.cuda.set_device(1)
+torch.cuda.set_device(0)
 data_type='ORSSD' #['ORSSD','EORSSD','ors-4199','RSISOD']
 from models.DBANet_SimAM_ShuffleAttn import DBANet_SimAM_ShuffleAttn as Net
-save_name = formatted_time + '_DBANet+SimAM+ShuffleAttn_' + data_type
+save_name = formatted_time + '_DBANet+SimAM+ShuffleAttn2_' + data_type
 # ===============================================================
 
 

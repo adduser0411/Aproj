@@ -1,7 +1,10 @@
+import sys
+import os
+sys.path.append(os.getcwd())
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from backbone.pvtv2 import pvt_v2_b2
+from models.backbone.pvtv2 import pvt_v2_b2
 import os
 import torch
 import torch.nn as nn
