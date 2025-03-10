@@ -2,8 +2,7 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 from torch.autograd import Variable
-import sys
-# new line
+# import sys
 # import numpy as np
 import tqdm
 import pdb, os, argparse
