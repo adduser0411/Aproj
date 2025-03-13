@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from .backbone.pvtv2 import pvt_v2_b2
+from .CFPNet import EVCBlock
 import os
 import torch
 import torch.nn as nn
@@ -377,6 +378,11 @@ class DBANet(nn.Module):
         self.ACmix2 = ACmix(128,128)
         self.ACmix3 = ACmix(320,320)
         self.ACmix4 = ACmix(512,512)  
+        
+        self.EVCBlock1 = EVCBlock(64, 64)
+        self.EVCBlock2 = EVCBlock(128, 128)
+        self.EVCBlock3 = EVCBlock(320, 320)
+        self.EVCBlock4 = EVCBlock(512, 512)
 
         # 解码器，用于将特征图解码为预测结果
         self.Decoder = Decoder(channel)
@@ -408,11 +414,17 @@ class DBANet(nn.Module):
         x3_dea = self.ACmix3(x3)
         x4_dea = self.ACmix4(x4)
 
-        # 这里可以根据需要添加额外的处理逻辑，目前直接使用增强后的特征图
-        x1_all =  x1_dea
-        x2_all =  x2_dea
-        x3_all =  x3_dea
-        x4_all =  x4_dea
+        # 通过 EVCBlock 模块对特征图进行增强
+        x1_evc = self.EVCBlock1(x1)
+        x2_evc = self.EVCBlock2(x2)
+        x3_evc = self.EVCBlock3(x3)
+        x4_evc = self.EVCBlock4(x4)
+        
+        # 将增强后的特征图进行融合
+        x1_all =  x1_dea + x1_evc
+        x2_all =  x2_dea + x2_evc
+        x3_all =  x3_dea + x3_evc
+        x4_all =  x4_dea + x4_evc
 
         # 通过通道归一化层将特征图的通道数统一
         x1_nor = self.ChannelNormalization_1(x1_all) # 32x88x88

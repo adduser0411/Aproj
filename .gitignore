@@ -9,3 +9,4 @@ result/
 predict/
 experiment/
 *.safetensors
+train[0-9].py

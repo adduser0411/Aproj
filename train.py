@@ -26,8 +26,8 @@ formatted_time =datetime.now().strftime('%y%m%d_%H%M')
 # ===============================================================
 torch.cuda.set_device(0)
 data_type='ORSSD' #['ORSSD','EORSSD','ors-4199','RSISOD']
-from models.DBANet_SimAM_ShuffleAttn import DBANet_SimAM_ShuffleAttn as Net
-save_name = formatted_time + '_DBANet+SimAM+ShuffleAttn2_' + data_type
+from models.DBANet import DBANet as Net
+save_name = formatted_time + '_DBANet+EVCBlock_' + data_type
 # ===============================================================
 
 
@@ -38,7 +38,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--epoch', type=int, default=45, help='epoch number')
 parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
 # parser.add_argument('--batchsize', type=int, default=8, help='training batch size')
-parser.add_argument('--batchsize', type=int, default=12, help='training batch size')
+parser.add_argument('--batchsize', type=int, default=4, help='training batch size')
 parser.add_argument('--trainsize', type=int, default=352, help='training dataset size')
 parser.add_argument('--clip', type=float, default=0.5, help='gradient clipping margin')
 parser.add_argument('--decay_rate', type=float, default=0.1, help='decay rate of learning rate')
