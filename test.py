@@ -25,8 +25,8 @@ dataset_path =os.path.join( os.path.dirname(dir_path),"datasets/RS-SOD")
 
 # ================================================================
 torch.cuda.set_device(0)
-from models.DBANet_SimAM_ShuffleAttn import DBANet_SimAM_ShuffleAttn as Net
-weight_path = os.path.join(proj_path,"weights/250310_2325_DBANet+SimAM+ShuffleAttn2_ORSSD/250310_2325_DBANet+SimAM+ShuffleAttn2_ORSSD.pth.38")
+from models.DBANet import DBANet as Net
+weight_path = os.path.join(proj_path,"weights/250313_2249_DBANet+EVCBlock_ORSSD/250313_2249_DBANet+EVCBlock_ORSSD.pth.39")
 # ================================================================
 
 model = Net()
