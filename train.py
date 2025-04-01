@@ -24,10 +24,10 @@ data_root = project_root +'/datasets/RS-SOD/'
 formatted_time =datetime.now().strftime('%y%m%d_%H%M')
 
 # ===============================================================
-torch.cuda.set_device(0)
+gpu=0
 data_type='ORSSD' #['ORSSD','EORSSD','ors-4199','RSISOD']
-from models.DBANet import DBANet as Net
-save_name = formatted_time + '_DBANet+EVCBlock_' + data_type
+from models.defaultDBA import DBANet as Net
+save_name = formatted_time + '_defaultDBANet_' + data_type
 # ===============================================================
 
 
@@ -35,18 +35,19 @@ model = Net()
 save_path = './weights/'+ save_name
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--epoch', type=int, default=45, help='epoch number')
+parser.add_argument('--gpu', type=int, default=gpu, help='set gpu id')
+parser.add_argument('--epoch', type=int, default=50, help='epoch number')
 parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
 # parser.add_argument('--batchsize', type=int, default=8, help='training batch size')
-parser.add_argument('--batchsize', type=int, default=4, help='training batch size')
+parser.add_argument('--batchsize', type=int, default=16, help='training batch size')
 parser.add_argument('--trainsize', type=int, default=352, help='training dataset size')
 parser.add_argument('--clip', type=float, default=0.5, help='gradient clipping margin')
 parser.add_argument('--decay_rate', type=float, default=0.1, help='decay rate of learning rate')
 parser.add_argument('--decay_epoch', type=int, default=30, help='every n epochs decay learning rate')
 opt = parser.parse_args() #
-
-
-model.cuda() 
+torch.cuda.set_device(opt.gpu)
+model.cuda()
+print("## device ## :", opt.gpu)
 params = model.parameters()
 optimizer = torch.optim.Adam(params, opt.lr)
 # 改用 AdamW 优化器
@@ -93,9 +94,9 @@ def train(train_loader, model, optimizer, epoch):
             # train_loader.set_description(f'Epoch {epoch}/{opt.epoch}, Loss: {loss.data:.4f}, LR: {opt.lr * opt.decay_rate ** (epoch // opt.decay_epoch):.6f}')
 
     
-    if not os.path.exists(save_path):
-        os.makedirs(save_path)
     if (epoch+1) > 38:
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
         torch.save(model.state_dict(), save_path + '/' + save_name + '.pth' + '.%d' % epoch, _use_new_zipfile_serialization=False)
 
 print("Let's go!")

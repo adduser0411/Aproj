@@ -24,9 +24,9 @@ dir_path = os.path.dirname(os.path.abspath(__file__))
 dataset_path =os.path.join( os.path.dirname(dir_path),"datasets/RS-SOD")
 
 # ================================================================
-torch.cuda.set_device(0)
-from models.DBANet import DBANet as Net
-weight_path = os.path.join(proj_path,"weights/250313_2249_DBANet+EVCBlock_ORSSD/250313_2249_DBANet+EVCBlock_ORSSD.pth.39")
+torch.cuda.set_device(3)
+from models.defaultDBA import DBANet as Net
+weight_path = os.path.join(proj_path,"weights/250331_1146_defaultDBANet_ORSSD/250331_1146_defaultDBANet_ORSSD.pth.38")
 # ================================================================
 
 model = Net()

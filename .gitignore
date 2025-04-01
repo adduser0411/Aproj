@@ -10,3 +10,5 @@ predict/
 experiment/
 *.safetensors
 train[0-9].py
+train_test_mae-fmax.py
+feature_sem_vis*/

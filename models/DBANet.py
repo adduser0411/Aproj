@@ -9,13 +9,48 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import Softmax, Dropout
 from torch.jit import Final
+from models.hotfeat import feature_vis
 
 from typing import List, Callable
 from torch import Tensor
 import os
 
 import math
+# 何恺明 DyT
+class DynamicTanh(nn.Module):   
+    def __init__(self, normalized_shape, alpha_init_value=0.5, channels_last=True):
+        """
+        动态 Tanh 激活层,  可以替代 LayerNorm 层。
+        Args:
+            normalized_shape (tuple): 输入张量的归一化形状
+            alpha_init_value (float): 初始的 alpha 值,  用于调节 Tanh 激活的“陡峭度”
+            channels_last (bool): 如果为 True,  则按最后一维通道进行加权,  否者按其他维度加权
+        """
+        super(DynamicTanh, self).__init__()
+        self.normalized_shape = normalized_shape
+        self.alpha_init_value = alpha_init_value
+        self.channels_last = channels_last
+        # 定义需要学习的参数
+        self.alpha = nn.Parameter(torch.ones(1) * alpha_init_value)
+        if isinstance(normalized_shape, int):
+            normalized_shape = (normalized_shape,)
+        self.weight = nn.Parameter(torch.ones(*normalized_shape))
+        self.bias = nn.Parameter(torch.zeros(*normalized_shape))
 
+    def forward(self, x):
+        """
+        前向传播：对输入应用动态 Tanh 激活,  并进行加权。
+        """
+        x = torch.tanh(self.alpha * x)  # 应用动态 Tanh 激活
+        # 根据 channels_last 参数确定加权方式
+        if self.channels_last:
+            # 确保 weight 和 bias 扩展到合适的维度
+            weight = self.weight.view(1, -1, 1, 1)
+            bias = self.bias.view(1, -1, 1, 1)
+            x = x * weight + bias
+        else:
+            x = x * self.weight[:, None, None] + self.bias[:, None, None]
+        return x
 
 class BasicConv2d(nn.Module):
     """
@@ -36,7 +71,8 @@ class BasicConv2d(nn.Module):
                               kernel_size=kernel_size, stride=stride,
                               padding=padding, dilation=dilation, bias=False)
         # 定义批量归一化层，对输出特征图的每个通道进行归一化处理
-        self.bn = nn.BatchNorm2d(out_planes)
+        self.bn = nn.BatchNorm2d(out_planes)  # 250326 替换为下方DyT
+        # self.bn = DynamicTanh(out_planes)  # 250326 替换为下方DyT
         # 定义 ReLU 激活函数，使用 inplace=True 可以节省内存
         self.relu = nn.ReLU(inplace=True)
 
@@ -272,7 +308,8 @@ class ACmix(nn.Module):
         self.padding_att = (self.dilation * (self.kernel_att - 1) + 1) // 2
         self.pad_att = torch.nn.ReflectionPad2d(self.padding_att)
         self.unfold = nn.Unfold(kernel_size=self.kernel_att, padding=0, stride=self.stride)
-        self.softmax = torch.nn.Softmax(dim=1)
+
+        self.softmax = nn.Softmax(dim=1)
 
         # 定义用于生成动态卷积核的全连接层和深度可分离卷积层
         self.fc = nn.Conv2d(3 * self.head, self.kernel_conv * self.kernel_conv, kernel_size=1, bias=False)
@@ -384,6 +421,13 @@ class DBANet(nn.Module):
         self.EVCBlock3 = EVCBlock(320, 320)
         self.EVCBlock4 = EVCBlock(512, 512)
 
+        # 引入门控机制
+        self.gate1 = nn.Conv2d(64 * 2, 64, kernel_size=1)
+        self.gate2 = nn.Conv2d(128 * 2, 128, kernel_size=1)
+        self.gate3 = nn.Conv2d(320 * 2, 320, kernel_size=1)
+        self.gate4 = nn.Conv2d(512 * 2, 512, kernel_size=1)
+        
+
         # 解码器，用于将特征图解码为预测结果
         self.Decoder = Decoder(channel)
 
@@ -414,27 +458,39 @@ class DBANet(nn.Module):
         x3_dea = self.ACmix3(x3)
         x4_dea = self.ACmix4(x4)
 
-        # 通过 EVCBlock 模块对特征图进行增强
+        # 通过 EVCBlock 模块对特征图进行增强a
         x1_evc = self.EVCBlock1(x1)
         x2_evc = self.EVCBlock2(x2)
         x3_evc = self.EVCBlock3(x3)
         x4_evc = self.EVCBlock4(x4)
-        
-        # 将增强后的特征图进行融合
-        x1_all =  x1_dea + x1_evc
-        x2_all =  x2_dea + x2_evc
-        x3_all =  x3_dea + x3_evc
-        x4_all =  x4_dea + x4_evc
+
+        # 引入门控机制，将两个增强后的特征图进行融合
+        x1_cat = torch.cat([x1_dea, x1_evc], dim=1)
+        x2_cat = torch.cat([x2_dea, x2_evc], dim=1)
+        x3_cat = torch.cat([x3_dea, x3_evc], dim=1)
+        x4_cat = torch.cat([x4_dea, x4_evc], dim=1)
+
+        gate1 = torch.sigmoid(self.gate1(x1_cat))
+        gate2 = torch.sigmoid(self.gate2(x2_cat))
+        gate3 = torch.sigmoid(self.gate3(x3_cat))
+        gate4 = torch.sigmoid(self.gate4(x4_cat))
+
+        x1_all = gate1 * x1_dea + (1 - gate1) * x1_evc
+        x2_all = gate2 * x2_dea + (1 - gate2) * x2_evc
+        x3_all = gate3 * x3_dea + (1 - gate3) * x3_evc
+        x4_all = gate4 * x4_dea + (1 - gate4) * x4_evc  
 
         # 通过通道归一化层将特征图的通道数统一
         x1_nor = self.ChannelNormalization_1(x1_all) # 32x88x88
         x2_nor = self.ChannelNormalization_2(x2_all) # 32x44x44
         x3_nor = self.ChannelNormalization_3(x3_all) # 32x22x22
         x4_nor = self.ChannelNormalization_4(x4_all) # 32x11x11
-
+        
         # 通过解码器进行解码，得到预测结果
         prediction = self.Decoder(x4_nor, x3_nor, x2_nor, x1_nor)
-
+        # print("111111111111")
+        # print(x1_nor.shape)
+        # print('已保存至：',)
         # 返回原始预测结果和经过 Sigmoid 激活后的预测结果
         return prediction, self.sigmoid(prediction)
 
