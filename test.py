@@ -25,10 +25,18 @@ dataset_path =os.path.join( os.path.dirname(dir_path),"datasets/RS-SOD")
 
 # ================================================================
 device = 4
-m='DBANetMambaOut'
-path="weights/250402_1440_DBANetMambaOut_ORSSD/250402_1440_DBANetMambaOut_ORSSD.pth.38"
+# m='DBANetARConv'
+path="weights/250401_2255_DBANetARConv_EORSSD/250401_2255_DBANetARConv_EORSSD.pth.38"
 # from models.DBANetARConv import DBANet as Net
 # ================================================================
+pattern = r'weights/\d{6}_\d{4}_([^_]+)_'
+match = re.search(pattern, path)
+if match:
+    m = match.group(1)
+    print(f"提取的模型名是: {m}")
+else:
+    print("未匹配到模型名")
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--testsize', type=int, default=352, help='testing size')
