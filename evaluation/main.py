@@ -10,7 +10,7 @@ proj_path = osp.dirname(osp.dirname(osp.abspath(__file__) ))
 
 # =================================================
 os.environ["CUDA_VISIBLE_DEVICES"] = "3"
-weight_path = osp.join(proj_path,'weights/250331_1146_defaultDBANet_ORSSD/250331_1146_defaultDBANet_ORSSD.pth.38')
+weight_path = osp.join(proj_path,'weights/250402_1440_DBANetMambaOut_ORSSD/250402_1440_DBANetMambaOut_ORSSD.pth.38')
 # =================================================
 
 filename = os.path.basename(weight_path)

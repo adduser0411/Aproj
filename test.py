@@ -3,10 +3,11 @@ import torch.nn.functional as F
 
 import numpy as np
 import pdb, os, argparse
-from scipy import misc
+# from scipy import misc
 import imageio
 import time
 import re
+import importlib
 
 # a new line
 # from models.DBANet import DBANet
@@ -16,18 +17,39 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, message="Overwriting.*")
 proj_path = os.path.dirname(os.path.abspath(__file__) ) 
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--testsize', type=int, default=352, help='testing size')
-opt = parser.parse_args()
+# parser = argparse.ArgumentParser()
+# opt = parser.parse_args()
 
 dir_path = os.path.dirname(os.path.abspath(__file__))
 dataset_path =os.path.join( os.path.dirname(dir_path),"datasets/RS-SOD")
 
 # ================================================================
-torch.cuda.set_device(3)
-from models.defaultDBA import DBANet as Net
-weight_path = os.path.join(proj_path,"weights/250331_1146_defaultDBANet_ORSSD/250331_1146_defaultDBANet_ORSSD.pth.38")
+device = 4
+m='DBANetMambaOut'
+path="weights/250402_1440_DBANetMambaOut_ORSSD/250402_1440_DBANetMambaOut_ORSSD.pth.38"
+# from models.DBANetARConv import DBANet as Net
 # ================================================================
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--testsize', type=int, default=352, help='testing size')
+parser.add_argument('--d', type=int, default=device, help='set device')
+parser.add_argument('--m', type=str, default=m, help='set model')
+parser.add_argument('--w', type=str, default=path, help='set path')
+opt = parser.parse_args() #
+if opt:
+    device = opt.d
+    path=opt.w
+    m=opt.m
+
+weight_path = os.path.join(proj_path,path)
+torch.cuda.set_device(device)
+try:
+    module = importlib.import_module(f'models.{m}')
+    Net = getattr(module, 'DBANet')
+except ImportError:
+    print(f"Failed to import module models.{m}")
+except AttributeError:
+    print(f"Module models.{m} does not have class {'DBANet'}")
 
 model = Net()
 model.load_state_dict(torch.load(weight_path))
@@ -69,7 +91,8 @@ for dataset in test_datasets:
         res, sal_sig = model(image)
         time_end = time.time()
         time_sum = time_sum+(time_end-time_start)
-        res = F.upsample(res, size=gt.shape, mode='bilinear', align_corners=False)
+        # 修改此处，使用 nn.functional.interpolate 替代 nn.functional.upsample
+        res = F.interpolate(res, size=gt.shape, mode='bilinear', align_corners=False)
         res = res.sigmoid().data.cpu().numpy().squeeze()
         res = (res - res.min()) / (res.max() - res.min() + 1e-8)
         res = (res * 255).astype(np.uint8) 

@@ -26,15 +26,15 @@ formatted_time =datetime.now().strftime('%y%m%d_%H%M')
 # ===============================================================
 gpu=0
 data_type='ORSSD' #['ORSSD','EORSSD','ors-4199','RSISOD']
-from models.defaultDBA import DBANet as Net
-save_name = formatted_time + '_defaultDBANet_' + data_type
+from models.DBANetMambaOut import DBANet as Net
+model_name = '_DBANetMambaOut_'
 # ===============================================================
 
 
 model = Net()
-save_path = './weights/'+ save_name
 
 parser = argparse.ArgumentParser()
+parser.add_argument('--data_type', type=str, default=data_type, help='choose dataset')
 parser.add_argument('--gpu', type=int, default=gpu, help='set gpu id')
 parser.add_argument('--epoch', type=int, default=50, help='epoch number')
 parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
@@ -52,7 +52,7 @@ params = model.parameters()
 optimizer = torch.optim.Adam(params, opt.lr)
 # 改用 AdamW 优化器
 # optimizer = torch.optim.AdamW(params, opt.lr, weight_decay=0.01)
-
+data_type=opt.data_type
 image_root=data_root+data_type+'_aug/train/images/'
 gt_root=data_root+data_type+'_aug/train/gt/'
 train_loader = get_loader(image_root, gt_root, batchsize=opt.batchsize, trainsize=opt.trainsize)
@@ -61,7 +61,8 @@ total_step = len(train_loader)
 CE = torch.nn.BCEWithLogitsLoss()
 IOU = pytorch_iou.IOU(size_average = True)
 
-
+save_name = formatted_time + model_name + data_type
+save_path = './weights/'+ save_name
 
 def train(train_loader, model, optimizer, epoch):
     model.train()
