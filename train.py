@@ -24,10 +24,10 @@ data_root = project_root +'/datasets/RS-SOD/'
 formatted_time =datetime.now().strftime('%y%m%d_%H%M')
 
 # ===============================================================
-gpu=0
+gpu=5
 data_type='ORSSD' #['ORSSD','EORSSD','ors-4199','RSISOD']
-from models.DBANetMambaOut import DBANet as Net
-model_name = '_DBANetMambaOut_'
+from models.MambaOutACmixParallel import DBANet as Net
+model_name = '_MambaOutACmixParallel_'
 # ===============================================================
 
 
