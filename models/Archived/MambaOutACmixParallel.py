@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .backbone.pvtv2 import pvt_v2_b2
+from ..backbone.pvtv2 import pvt_v2_b2
 import os
 import torch
 import torch.nn as nn
@@ -13,7 +13,6 @@ from typing import List, Callable
 from torch import Tensor
 import os
 from timm.layers import DropPath
-from .blocks.EMSA import EMSA  # 导入 EMSA 模块
 
 import math
 
@@ -420,13 +419,6 @@ class DBANet(nn.Module):
         self.gated_cnn_block3 = GatedCNNBlock(dim=320)
         self.gated_cnn_block4 = GatedCNNBlock(dim=512)
 
-                # 初始化 EMSA 分支
-        self.emsa1 = EMSA(d_model=64, d_k=64, d_v=64, h=8, H=88, W=88, ratio=2, apply_transform=True)
-        self.emsa2 = EMSA(d_model=128, d_k=128, d_v=128, h=8, H=44, W=44, ratio=2, apply_transform=True)
-        self.emsa3 = EMSA(d_model=320, d_k=320, d_v=320, h=8, H=22, W=22, ratio=2, apply_transform=True)
-        self.emsa4 = EMSA(d_model=512, d_k=512, d_v=512, h=8, H=11, W=11, ratio=2, apply_transform=True)
-
-
         # 解码器，用于将特征图解码为预测结果
         self.Decoder = Decoder(channel)
 
@@ -458,17 +450,15 @@ class DBANet(nn.Module):
         x4_dea = self.ACmix4(x4)
 
         # 调整特征图维度以适应 GatedCNNBlock 输入要求 [B, C, H, W] -> [B, H, W, C]
-        x1_permuted = x1_dea.permute(0, 2, 3, 1)
-        x2_permuted = x2_dea.permute(0, 2, 3, 1)
-        x3_permuted = x3_dea.permute(0, 2, 3, 1)
-        x4_permuted = x4_dea.permute(0, 2, 3, 1)
-
+        x1_permuted = x1.permute(0, 2, 3, 1)
+        x2_permuted = x2.permute(0, 2, 3, 1)
+        x3_permuted = x3.permute(0, 2, 3, 1)
+        x4_permuted = x4.permute(0, 2, 3, 1)
         # 通过 GatedCNNBlock 处理特征
         x1_gated = self.gated_cnn_block1(x1_permuted)
         x2_gated = self.gated_cnn_block2(x2_permuted)
         x3_gated = self.gated_cnn_block3(x3_permuted)
         x4_gated = self.gated_cnn_block4(x4_permuted)
-
         # 调整回原始维度 [B, H, W, C] -> [B, C, H, W]
         x1_gated = x1_gated.permute(0, 3, 1, 2)
         x2_gated = x2_gated.permute(0, 3, 1, 2)
@@ -480,25 +470,6 @@ class DBANet(nn.Module):
         x2_all = x2_dea + x2_gated
         x3_all = x3_dea + x3_gated
         x4_all = x4_dea + x4_gated
-
-        # EMSA 分支
-        b_s, c1, h1, w1 = x1.shape
-        x1_emsa = self.emsa1(x1.permute(0, 2, 3, 1).reshape(b_s, -1, c1), x1.permute(0, 2, 3, 1).reshape(b_s, -1, c1), x1.permute(0, 2, 3, 1).reshape(b_s, -1, c1)).reshape(b_s, h1, w1, c1).permute(0, 3, 1, 2)
-        
-        b_s, c2, h2, w2 = x2.shape
-        x2_emsa = self.emsa2(x2.permute(0, 2, 3, 1).reshape(b_s, -1, c2), x2.permute(0, 2, 3, 1).reshape(b_s, -1, c2), x2.permute(0, 2, 3, 1).reshape(b_s, -1, c2)).reshape(b_s, h2, w2, c2).permute(0, 3, 1, 2)
-        
-        b_s, c3, h3, w3 = x3.shape
-        x3_emsa = self.emsa3(x3.permute(0, 2, 3, 1).reshape(b_s, -1, c3), x3.permute(0, 2, 3, 1).reshape(b_s, -1, c3), x3.permute(0, 2, 3, 1).reshape(b_s, -1, c3)).reshape(b_s, h3, w3, c3).permute(0, 3, 1, 2)
-        
-        b_s, c4, h4, w4 = x4.shape
-        x4_emsa = self.emsa4(x4.permute(0, 2, 3, 1).reshape(b_s, -1, c4), x4.permute(0, 2, 3, 1).reshape(b_s, -1, c4), x4.permute(0, 2, 3, 1).reshape(b_s, -1, c4)).reshape(b_s, h4, w4, c4).permute(0, 3, 1, 2)
-
-        # 融合原有分支和 EMSA 分支
-        x1_all = x1_all + x1_emsa
-        x2_all = x2_all + x2_emsa
-        x3_all = x3_all + x3_emsa
-        x4_all = x4_all + x4_emsa
 
         # 通过通道归一化层将特征图的通道数统一
         x1_nor = self.ChannelNormalization_1(x1_all) # 32x88x88

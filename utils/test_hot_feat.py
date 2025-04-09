@@ -1,4 +1,4 @@
-import hotfeat
+import utils.hotfeat as hotfeat
 import torch
 
 #随机生成一个张量：

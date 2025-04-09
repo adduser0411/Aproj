@@ -9,7 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import Softmax, Dropout
 from torch.jit import Final
-from models.hotfeat import feature_vis
+from utils.hotfeat import feature_vis
 
 from typing import List, Callable
 from torch import Tensor

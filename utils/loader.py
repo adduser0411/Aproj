@@ -89,6 +89,16 @@ class SalObjDataset(data.Dataset):
         self.gts = sorted(self.gts)
         self.filter_files()
         self.size = len(self.images)
+
+            # 添加颜色抖动变换
+        self.color_jitter = transforms.ColorJitter(
+            brightness=0.2,
+            contrast=0.2,
+            saturation=0.2,
+            hue=0.1
+            )
+
+    
         self.img_transform = transforms.Compose([
             transforms.Resize((self.trainsize, self.trainsize)),
             transforms.ToTensor(),

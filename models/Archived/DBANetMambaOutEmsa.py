@@ -1,262 +1,21 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .backbone.pvtv2 import pvt_v2_b2
+from ..backbone.pvtv2 import pvt_v2_b2
 import os
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from torch.nn import Softmax, Dropout
 from torch.jit import Final
+from functools import partial
 from typing import List, Callable
 from torch import Tensor
+import os
+from timm.layers import DropPath
+from ..blocks.EMSA import EMSA  # 导入 EMSA 模块
+
 import math
-
-
-# Adaptive Rectangular Convolution (ARConv).
-class ARConv(nn.Module):
-    def __init__(self, inc, outc, kernel_size=3, padding=1, stride=1, l_max=9, w_max=9, flag=False, modulation=True):
-        super(ARConv, self).__init__()
-        self.lmax = l_max
-        self.wmax = w_max
-        self.inc = inc
-        self.outc = outc
-        self.kernel_size = kernel_size
-        self.padding = padding
-        self.stride = stride
-        self.zero_padding = nn.ZeroPad2d(padding)
-        self.flag = flag
-        self.modulation = modulation
-        self.i_list = [33, 35, 53, 37, 73, 55, 57, 75, 77]
-        self.convs = nn.ModuleList(
-            [
-                nn.Conv2d(inc, outc, kernel_size=(i // 10, i % 10), stride=(i // 10, i % 10), padding=0)
-                for i in self.i_list
-            ]
-        )
-        self.m_conv = nn.Sequential(
-            nn.Conv2d(inc, outc, kernel_size=3, padding=1, stride=stride),
-            nn.LeakyReLU(),
-            nn.Dropout2d(0.3),
-            nn.Conv2d(outc, outc, kernel_size=3, padding=1, stride=stride),
-            nn.LeakyReLU(),
-            nn.Dropout2d(0.3),
-            nn.Conv2d(outc, outc, kernel_size=3, padding=1, stride=stride),
-            nn.Tanh()
-        )
-        self.b_conv = nn.Sequential(
-            nn.Conv2d(inc, outc, kernel_size=3, padding=1, stride=stride),
-            nn.LeakyReLU(),
-            nn.Dropout2d(0.3),
-            nn.Conv2d(outc, outc, kernel_size=3, padding=1, stride=stride),
-            nn.LeakyReLU(),
-            nn.Dropout2d(0.3),
-            nn.Conv2d(outc, outc, kernel_size=3, padding=1, stride=stride)
-        )
-        self.p_conv = nn.Sequential(
-            nn.Conv2d(inc, inc, kernel_size=3, padding=1, stride=stride),
-            nn.BatchNorm2d(inc),
-            nn.LeakyReLU(),
-            nn.Dropout2d(0),
-            nn.Conv2d(inc, inc, kernel_size=3, padding=1, stride=stride),
-            nn.BatchNorm2d(inc),
-            nn.LeakyReLU(),
-        )
-        self.l_conv = nn.Sequential(
-            nn.Conv2d(inc, 1, kernel_size=3, padding=1, stride=stride),
-            nn.BatchNorm2d(1),
-            nn.LeakyReLU(),
-            nn.Dropout2d(0),
-            nn.Conv2d(1, 1, 1),
-            nn.BatchNorm2d(1),
-            nn.Sigmoid()
-        )
-        self.w_conv = nn.Sequential(
-            nn.Conv2d(inc, 1, kernel_size=3, padding=1, stride=stride),
-            nn.BatchNorm2d(1),
-            nn.LeakyReLU(),
-            nn.Dropout2d(0),
-            nn.Conv2d(1, 1, 1),
-            nn.BatchNorm2d(1),
-            nn.Sigmoid()
-        )
-        self.dropout1 = nn.Dropout(0.3)
-        self.dropout2 = nn.Dropout2d(0.3)
-        self.hook_handles = []
-        self.hook_handles.append(self.m_conv[0].register_full_backward_hook(self._set_lr))
-        self.hook_handles.append(self.m_conv[1].register_full_backward_hook(self._set_lr))
-        self.hook_handles.append(self.b_conv[0].register_full_backward_hook(self._set_lr))
-        self.hook_handles.append(self.b_conv[1].register_full_backward_hook(self._set_lr))
-        self.hook_handles.append(self.p_conv[0].register_full_backward_hook(self._set_lr))
-        self.hook_handles.append(self.p_conv[1].register_full_backward_hook(self._set_lr))
-        self.hook_handles.append(self.l_conv[0].register_full_backward_hook(self._set_lr))
-        self.hook_handles.append(self.l_conv[1].register_full_backward_hook(self._set_lr))
-        self.hook_handles.append(self.w_conv[0].register_full_backward_hook(self._set_lr))
-        self.hook_handles.append(self.w_conv[1].register_full_backward_hook(self._set_lr))
-
-        self.reserved_NXY = nn.Parameter(torch.tensor([3, 3], dtype=torch.int32), requires_grad=False)
-
-    @staticmethod
-    def _set_lr(module, grad_input, grad_output):
-        grad_input = tuple(g * 0.1 if g is not None else None for g in grad_input)
-        grad_output = tuple(g * 0.1 if g is not None else None for g in grad_output)
-        return grad_input
-
-    def remove_hooks(self):
-        for handle in self.hook_handles:
-            handle.remove()  # 移除钩子函数
-        self.hook_handles.clear()  # 清空句柄列表
-
-    def forward(self, x, epoch, hw_range):
-        assert isinstance(hw_range, list) and len(hw_range) == 2, "hw_range should be a list with 2 elements, represent the range of h w"
-        scale = hw_range[1] // 9
-        if hw_range[0] == 1 and hw_range[1] == 3:
-            scale = 1
-        m = self.m_conv(x)
-        bias = self.b_conv(x)
-        offset = self.p_conv(x * 100)
-        l = self.l_conv(offset) * (hw_range[1] - 1) + 1  # b, 1, h, w
-        w = self.w_conv(offset) * (hw_range[1] - 1) + 1  # b, 1, h, w
-        if epoch <= 100:
-            mean_l = l.mean(dim=0).mean(dim=1).mean(dim=1)
-            mean_w = w.mean(dim=0).mean(dim=1).mean(dim=1)
-            N_X = int(mean_l // scale)
-            N_Y = int(mean_w // scale)
-            def phi(x):
-                if x % 2 == 0:
-                    x -= 1
-                return x
-            N_X, N_Y = phi(N_X), phi(N_Y)
-            N_X, N_Y = max(N_X, 3), max(N_Y, 3)
-            N_X, N_Y = min(N_X, 7), min(N_Y, 7)
-            if epoch == 100:
-                self.reserved_NXY = nn.Parameter(
-                    torch.tensor([N_X, N_Y], dtype=torch.int32, device=x.device),
-                    requires_grad=False
-                )
-        else:
-            N_X = self.reserved_NXY[0]
-            N_Y = self.reserved_NXY[1]
-        N = N_X * N_Y
-        # print(N_X, N_Y)
-        l = l.repeat([1, N, 1, 1])
-        w = w.repeat([1, N, 1, 1])
-        offset = torch.cat((l, w), dim=1)
-        dtype = offset.data.type()
-        if self.padding:
-            x = self.zero_padding(x)
-        p = self._get_p(offset, dtype, N_X, N_Y)  # (b, 2*N, h, w)
-        p = p.contiguous().permute(0, 2, 3, 1)  # (b, h, w, 2*N)
-        q_lt = p.detach().floor()
-        q_rb = q_lt + 1
-        q_lt = torch.cat(
-            [
-                torch.clamp(q_lt[..., :N], 0, x.size(2) - 1),
-                torch.clamp(q_lt[..., N:], 0, x.size(3) - 1),
-            ],
-            dim=-1,
-        ).long()
-        q_rb = torch.cat(
-            [
-                torch.clamp(q_rb[..., :N], 0, x.size(2) - 1),
-                torch.clamp(q_rb[..., N:], 0, x.size(3) - 1),
-            ],
-            dim=-1,
-        ).long()
-        q_lb = torch.cat([q_lt[..., :N], q_rb[..., N:]], dim=-1)
-        q_rt = torch.cat([q_rb[..., :N], q_lt[..., N:]], dim=-1)
-        # clip p
-        p = torch.cat(
-            [
-                torch.clamp(p[..., :N], 0, x.size(2) - 1),
-                torch.clamp(p[..., N:], 0, x.size(3) - 1),
-            ],
-            dim=-1,
-        )
-        # bilinear kernel (b, h, w, N)
-        g_lt = (1 + (q_lt[..., :N].type_as(p) - p[..., :N])) * (
-                1 + (q_lt[..., N:].type_as(p) - p[..., N:])
-        )
-        g_rb = (1 - (q_rb[..., :N].type_as(p) - p[..., :N])) * (
-                1 - (q_rb[..., N:].type_as(p) - p[..., N:])
-        )
-        g_lb = (1 + (q_lb[..., :N].type_as(p) - p[..., :N])) * (
-                1 - (q_lb[..., N:].type_as(p) - p[..., N:])
-        )
-        g_rt = (1 - (q_rt[..., :N].type_as(p) - p[..., :N])) * (
-                1 + (q_rt[..., N:].type_as(p) - p[..., N:])
-        )
-        # (b, c, h, w, N)
-        x_q_lt = self._get_x_q(x, q_lt, N)
-        x_q_rb = self._get_x_q(x, q_rb, N)
-        x_q_lb = self._get_x_q(x, q_lb, N)
-        x_q_rt = self._get_x_q(x, q_rt, N)
-        # (b, c, h, w, N)
-        x_offset = (
-                g_lt.unsqueeze(dim=1) * x_q_lt
-                + g_rb.unsqueeze(dim=1) * x_q_rb
-                + g_lb.unsqueeze(dim=1) * x_q_lb
-                + g_rt.unsqueeze(dim=1) * x_q_rt
-        )
-        x_offset = self._reshape_x_offset(x_offset, N_X, N_Y)
-        x_offset = self.dropout2(x_offset)
-        x_offset = self.convs[self.i_list.index(N_X * 10 + N_Y)](x_offset)
-        out = x_offset * m + bias
-        return out
-
-    def _get_p_n(self, N, dtype, n_x, n_y):
-        p_n_x, p_n_y = torch.meshgrid(
-            torch.arange(-(n_x - 1) // 2, (n_x - 1) // 2 + 1),
-            torch.arange(-(n_y - 1) // 2, (n_y - 1) // 2 + 1),
-            indexing = 'ij',
-        )
-        p_n = torch.cat([torch.flatten(p_n_x), torch.flatten(p_n_y)], 0)
-        p_n = p_n.view(1, 2 * N, 1, 1).type(dtype)
-        return p_n
-
-    def _get_p_0(self, h, w, N, dtype):
-        p_0_x, p_0_y = torch.meshgrid(
-            torch.arange(1, h * self.stride + 1, self.stride),
-            torch.arange(1, w * self.stride + 1, self.stride),
-            indexing = 'ij',
-        )
-        p_0_x = torch.flatten(p_0_x).view(1, 1, h, w).repeat(1, N, 1, 1)
-        p_0_y = torch.flatten(p_0_y).view(1, 1, h, w).repeat(1, N, 1, 1)
-        p_0 = torch.cat([p_0_x, p_0_y], 1).type(dtype)
-        return p_0
-
-    def _get_p(self, offset, dtype, n_x, n_y):
-        N, h, w = offset.size(1) // 2, offset.size(2), offset.size(3)
-        L, W = offset.split([N, N], dim=1)
-        L = L / n_x
-        W = W / n_y
-        offsett = torch.cat([L, W], dim=1)
-        p_n = self._get_p_n(N, dtype, n_x, n_y)
-        p_n = p_n.repeat([1, 1, h, w])
-        p_0 = self._get_p_0(h, w, N, dtype)
-        p = p_0 + offsett * p_n
-        return p
-
-    def _get_x_q(self, x, q, N):
-        b, h, w, _ = q.size()
-        padded_w = x.size(3)
-        c = x.size(1)
-        x = x.contiguous().view(b, c, -1)
-        index = q[..., :N] * padded_w + q[..., N:]
-        index = (
-            index.contiguous()
-            .unsqueeze(dim=1)
-            .expand(-1, c, -1, -1, -1)
-            .contiguous()
-            .view(b, c, -1)
-        )
-        x_offset = x.gather(dim=-1, index=index).contiguous().view(b, c, h, w, N)
-        return x_offset
-
-    @staticmethod
-    def _reshape_x_offset(x_offset, n_x, n_y):
-        b, c, h, w, N = x_offset.size()
-        x_offset = torch.cat([x_offset[..., s:s + n_y].contiguous().view(b, c, h, w * n_y) for s in range(0, N, n_y)],
-                             dim=-1)
-        x_offset = x_offset.contiguous().view(b, c, h * n_x, w * n_y)
-        return x_offset
 
 
 class BasicConv2d(nn.Module):
@@ -296,10 +55,8 @@ class BasicConv2d(nn.Module):
         x = self.conv(x)
         # 对卷积结果进行批量归一化处理
         x = self.bn(x)
-        # 应用 ReLU 激活函数
-        x = self.relu(x)
-        return x
 
+        return x
 
 class BasicConv2dReLu(nn.Module):
     """
@@ -346,6 +103,7 @@ class BasicConv2dReLu(nn.Module):
         # 对归一化后的结果应用 ReLU 激活函数
         x = self.relu(x)
         return x
+
 
 
 class Decoder(nn.Module):
@@ -414,6 +172,7 @@ class Decoder(nn.Module):
         # align_corners=True 表示对齐角点像素
         self.upsample_4 = nn.Upsample(scale_factor=4, mode='bilinear', align_corners=True)
 
+
     def forward(self, x4, x3, x2, x1):
         """
         前向传播函数，定义解码器的计算流程。
@@ -433,70 +192,65 @@ class Decoder(nn.Module):
 
         # 将第4层解码器的输出和第3层的特征图在通道维度（dim=1）上拼接
         # x4_decoder 尺寸为 32x22x22，x3 尺寸为 32x22x22，拼接后得到 64x22x22 的特征图
-        x3_cat = torch.cat([x4_decoder, x3], 1)  # 64*22*22
+        x3_cat = torch.cat([x4_decoder, x3], 1)   # 64*22*22
         # 通过解码器第3层处理拼接后的特征图
         # 拼接后的特征图 x3_cat 尺寸为 64x22x22，经过解码器第3层后尺寸变为 32x44x44
         x3_decoder = self.decoder3(x3_cat)
 
         # 将第3层解码器的输出和第2层的特征图在通道维度（dim=1）上拼接
         # x3_decoder 尺寸为 32x44x44，x2 尺寸为 32x44x44，拼接后得到 64x44x44 的特征图
-        x2_cat = torch.cat([x3_decoder, x2], 1)  # 64*44*44
+        x2_cat = torch.cat([x3_decoder, x2], 1) # 64*44*44
         # 通过解码器第2层处理拼接后的特征图
         # 拼接后的特征图 x2_cat 尺寸为 64x44x44，经过解码器第2层后尺寸变为 32x88x88
-        x2_decoder = self.decoder2(x2_cat)  # 32*88*88
+        x2_decoder = self.decoder2(x2_cat)   # 32*88*88
 
         # 将第2层解码器的输出和第1层的特征图在通道维度（dim=1）上拼接
         # x2_decoder 尺寸为 32x88x88，x1 尺寸为 32x88x88，拼接后得到 64x88x88 的特征图
-        x1_cat = torch.cat([x2_decoder, x1], 1)  # 64*88*88
+        x1_cat = torch.cat([x2_decoder, x1], 1) # 64*88*88
         # 通过解码器第1层处理拼接后的特征图
         # 拼接后的特征图 x1_cat 尺寸为 64x88x88，经过解码器第1层后尺寸变为 32x88x88
-        x1_decoder = self.decoder1(x1_cat)  # 32*88*88
+        x1_decoder = self.decoder1(x1_cat)   # 32*88*88
 
         # 通过卷积层将 32 通道的特征图转换为 1 通道的预测结果
         # x1_decoder 尺寸为 32x88x88，经过卷积层后尺寸变为 1x88x88
-        x = self.conv(x1_decoder)  # 1*88*88
+        x = self.conv(x1_decoder) # 1*88*88
         # 通过上采样层将 1x88x88 的特征图放大 4 倍，得到最终的预测结果
         # 上采样后特征图 x 的尺寸变为 1x352x352
-        x = self.upsample_4(x)  # 1*352*352
+        x = self.upsample_4(x) # 1*352*352
 
         return x
 
-
-# 定义一个函数来生成位置编码，返回一个包含位置信息的张量
+ # 定义一个函数来生成位置编码，返回一个包含位置信息的张量
 def position(H, W, is_cuda=True):
     # 生成宽度和高度的位置信息，范围在-1到1之间
     if is_cuda:
-        loc_w = torch.linspace(-1.0, 1.0, W).cuda().unsqueeze(0).repeat(H, 1)  # 为宽度生成线性间距的位置信息并复制到GPU
-        loc_h = torch.linspace(-1.0, 1.0, H).cuda().unsqueeze(1).repeat(1, W)  # 为高度生成线性间距的位置信息并复制到GPU
+        loc_w = torch.linspace(-1.0, 1.0, W).cuda().unsqueeze(0).repeat(H, 1)# 为宽度生成线性间距的位置信息并复制到GPU
+        loc_h = torch.linspace(-1.0, 1.0, H).cuda().unsqueeze(1).repeat(1, W) # 为高度生成线性间距的位置信息并复制到GPU
     else:
-        loc_w = torch.linspace(-1.0, 1.0, W).unsqueeze(0).repeat(H, 1)  # 在CPU上为宽度生成线性间距的位置信息
-        loc_h = torch.linspace(-1.0, 1.0, H).unsqueeze(1).repeat(1, W)  # 在CPU上为高度生成线性间距的位置信息
-    loc = torch.cat([loc_w.unsqueeze(0), loc_h.unsqueeze(0)], 0).unsqueeze(0)  # 合并宽度和高度的位置信息，并增加一个维度
+        loc_w = torch.linspace(-1.0, 1.0, W).unsqueeze(0).repeat(H, 1) # 在CPU上为宽度生成线性间距的位置信息
+        loc_h = torch.linspace(-1.0, 1.0, H).unsqueeze(1).repeat(1, W) # 在CPU上为高度生成线性间距的位置信息
+    loc = torch.cat([loc_w.unsqueeze(0), loc_h.unsqueeze(0)], 0).unsqueeze(0) # 合并宽度和高度的位置信息，并增加一个维度
     return loc
-
 
 # 定义一个函数实现步长操作，用于降采样
 def stride(x, stride):
     b, c, h, w = x.shape
-    return x[:, :, ::stride, ::stride]  # 通过步长来降低采样率
-
+    return x[:, :, ::stride, ::stride] # 通过步长来降低采样率
 
 # 初始化函数，将张量的值填充为0.5
 def init_rate_half(tensor):
     if tensor is not None:
-        tensor.data.fill_(0.5)  # 使用0.5来填充张量
-
+        tensor.data.fill_(0.5) # 使用0.5来填充张量
 
 # 初始化函数，将张量的值填充为0
 def init_rate_0(tensor):
     if tensor is not None:
         tensor.data.fill_(0.)
 
-
 # 定义ACmix模块的类
 class ACmix(nn.Module):
     def __init__(self, in_planes, out_planes, kernel_att=7, head=4, kernel_conv=3, stride=1, dilation=1):
-        super(ACmix, self).__init__()  # 调用父类的构造函数
+        super(ACmix, self).__init__() # 调用父类的构造函数
         # 初始化模块参数
         self.in_planes = in_planes
         self.out_planes = out_planes
@@ -525,7 +279,7 @@ class ACmix(nn.Module):
         self.fc = nn.Conv2d(3 * self.head, self.kernel_conv * self.kernel_conv, kernel_size=1, bias=False)
         self.dep_conv = nn.Conv2d(self.kernel_conv * self.kernel_conv * self.head_dim, out_planes,
                                   kernel_size=self.kernel_conv, bias=True, groups=self.head_dim, padding=1,
-                                  stride=self.stride)  # 深度可分离卷积层，用于应用动态卷积核
+                                  stride=stride)# 深度可分离卷积层，用于应用动态卷积核
 
         self.reset_parameters()  # 参数初始化
 
@@ -536,76 +290,106 @@ class ACmix(nn.Module):
         for i in range(self.kernel_conv * self.kernel_conv):
             kernel[i, i // self.kernel_conv, i % self.kernel_conv] = 1.
         kernel = kernel.squeeze(0).repeat(self.out_planes, 1, 1, 1)
-        self.dep_conv.weight = nn.Parameter(data=kernel, requires_grad=True)  # 设置为可学习参数
-        self.dep_conv.bias = init_rate_0(self.dep_conv.bias)  # 初始化偏置为0
+        self.dep_conv.weight = nn.Parameter(data=kernel, requires_grad=True)# 设置为可学习参数
+        self.dep_conv.bias = init_rate_0(self.dep_conv.bias)# 初始化偏置为0
 
     def forward(self, x):
-        q, k, v = self.conv1(x), self.conv2(x), self.conv3(x)  # 应用转换层
-        scaling = float(self.head_dim) ** -0.5  # 缩放因子，用于自注意力计算
+        q, k, v = self.conv1(x), self.conv2(x), self.conv3(x)# 应用转换层
+        scaling = float(self.head_dim) ** -0.5# 缩放因子，用于自注意力计算
         b, c, h, w = q.shape
-        h_out, w_out = h // self.stride, w // self.stride  # 计算输出的高度和宽度
+        h_out, w_out = h // self.stride, w // self.stride # 计算输出的高度和宽度
 
-        pe = self.conv_p(position(h, w, x.is_cuda))  # 生成位置编码
+        pe = self.conv_p(position(h, w, x.is_cuda))# 生成位置编码
         # 为自注意力机制准备q, k, v
         q_att = q.view(b * self.head, self.head_dim, h, w) * scaling
         k_att = k.view(b * self.head, self.head_dim, h, w)
         v_att = v.view(b * self.head, self.head_dim, h, w)
 
-        if self.stride > 1:  # 如果步长大于1，则对q和位置编码进行降采样
+        if self.stride > 1: # 如果步长大于1，则对q和位置编码进行降采样
             q_att = stride(q_att, self.stride)
             q_pe = stride(pe, self.stride)
         else:
             q_pe = pe
-        # 展开k和位置编码，准备自注意力计算
+       # 展开k和位置编码，准备自注意力计算
         unfold_k = self.unfold(self.pad_att(k_att)).view(b * self.head, self.head_dim,
                                                          self.kernel_att * self.kernel_att, h_out,
                                                          w_out)  # b*head, head_dim, k_att^2, h_out, w_out
         unfold_rpe = self.unfold(self.pad_att(pe)).view(1, self.head_dim, self.kernel_att * self.kernel_att, h_out,
                                                         w_out)  # 1, head_dim, k_att^2, h_out, w_out
-        # 计算注意力权重
+		 # 计算注意力权重
         att = (q_att.unsqueeze(2) * (unfold_k + q_pe.unsqueeze(2) - unfold_rpe)).sum(
             1)  # (b*head, head_dim, 1, h_out, w_out) * (b*head, head_dim, k_att^2, h_out, w_out) -> (b*head, k_att^2, h_out, w_out)
         att = self.softmax(att)
-        # 应用注意力权重
+		  # 应用注意力权重
         out_att = self.unfold(self.pad_att(v_att)).view(b * self.head, self.head_dim, self.kernel_att * self.kernel_att,
                                                         h_out, w_out)
         out_att = (att.unsqueeze(1) * out_att).sum(2).view(b, self.out_planes, h_out, w_out)
-        # 动态卷积核
+		# 动态卷积核
         f_all = self.fc(torch.cat(
             [q.view(b, self.head, self.head_dim, h * w), k.view(b, self.head, self.head_dim, h * w),
              v.view(b, self.head, self.head_dim, h * w)], 1))
         f_conv = f_all.permute(0, 2, 1, 3).reshape(x.shape[0], -1, x.shape[-2], x.shape[-1])
 
         out_conv = self.dep_conv(f_conv)
-        # 将注意力分支和卷积分支的输出相加
+		# 将注意力分支和卷积分支的输出相加
         return self.rate1 * out_att + self.rate2 * out_conv
 
+
+class GatedCNNBlock(nn.Module):
+    r""" Our implementation of Gated CNN Block: https://arxiv.org/pdf/1612.08083
+    Args: 
+        Conv_ratio:控制进行深度卷积的通道数。对部分通道进行卷积可以提高实际效率。
+        部分通道的想法来自ShuffleNet V2 (https://arxiv.org/abs/1807.11164)和也被
+        InceptionNeXt (https://arxiv.org/abs/2303.16900)和FasterNet (https://arxiv.org/abs/2303.03667)使用。
+    """
+    def __init__(self, dim, expansion_ratio=8/3, kernel_size=7, conv_ratio=1.0,
+                 norm_layer=partial(nn.LayerNorm,eps=1e-6), 
+                 act_layer=nn.GELU,
+                 drop_path=0.,
+                 **kwargs):
+        super().__init__()
+        self.norm = norm_layer(dim)
+        hidden = int(expansion_ratio * dim)
+        self.fc1 = nn.Linear(dim, hidden * 2)
+        self.act = act_layer()
+        conv_channels = int(conv_ratio * dim)
+        self.split_indices = (hidden, hidden - conv_channels, conv_channels)
+        self.conv = nn.Conv2d(conv_channels, conv_channels, kernel_size=kernel_size, padding=kernel_size//2, groups=conv_channels)
+        self.fc2 = nn.Linear(hidden, dim)
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+
+    def forward(self, x):
+        shortcut = x # [B, H, W, C]
+        x = self.norm(x)
+        g, i, c = torch.split(self.fc1(x), self.split_indices, dim=-1)
+        c = c.permute(0, 3, 1, 2) # [B, H, W, C] -> [B, C, H, W]
+        c = self.conv(c)
+        c = c.permute(0, 2, 3, 1) # [B, C, H, W] -> [B, H, W, C]
+        x = self.fc2(self.act(g) * torch.cat((i, c), dim=-1))
+        x = self.drop_path(x)
+        return x + shortcut
 
 class DBANet(nn.Module):
     """
     DBANet 模型类，继承自 nn.Module。
-    结合骨干网络（pvt_v2_b2）、通道归一化层、ACmix 模块、ARConv 模块和解码器，最后通过 Sigmoid 激活函数输出预测结果。
+    结合骨干网络（pvt_v2_b2）、通道归一化层、ACmix 模块、GatedCNNBlock 和解码器，最后通过 Sigmoid 激活函数输出预测结果。
     """
-    def __init__(self, channel=32, epoch=1, hw_range=[1, 18]):
+    def __init__(self, channel=32):
         """
         初始化 DBANet 模型。
 
         参数:
         channel (int): 通道归一化层的输出通道数，默认为 32。
-        epoch (int): 当前训练轮次，用于 ARConv 模块。
-        hw_range (list): 高度和宽度的学习范围，用于 ARConv 模块。
         """
         super(DBANet, self).__init__()
-        self.epoch = epoch
-        self.hw_range = hw_range
 
         # 加载骨干网络 pvt_v2_b2，其输出通道数分别为 [64, 128, 320, 512]
         self.backbone = pvt_v2_b2()  # [64, 128, 320, 512]
         # 预训练模型的路径
-        abspath = os.path.abspath(__file__)  # 获取所执行脚本的绝对路径
-        proj_path = os.path.dirname(abspath)  # 获取父级路径
+        abspath = os.path.abspath(__file__) # 获取所执行脚本的绝对路径
+        proj_path = os.path.dirname(abspath) # 获取父级路径
         path = proj_path + '/backbone/pretrained/pvt_v2_b2.pth'
-
+        
         # 加载预训练模型的权重
         save_model = torch.load(path)
         # 获取当前骨干网络的状态字典
@@ -617,24 +401,31 @@ class DBANet(nn.Module):
         # 加载更新后的状态字典到骨干网络
         self.backbone.load_state_dict(model_dict)
 
-        # ARConv 模块，用于特征增强
-        self.ARConv1 = ARConv(inc=64, outc=64)
-        self.ARConv2 = ARConv(inc=128, outc=128)
-        self.ARConv3 = ARConv(inc=320, outc=320)
-        self.ARConv4 = ARConv(inc=512, outc=512)
-
         # 输入尺寸为 3x352x352
         # 通道归一化层，将输入通道数转换为指定的通道数
         self.ChannelNormalization_1 = BasicConv2d(64, channel, 3, 1, 1)  # 64x88x88->32x88x88
-        self.ChannelNormalization_2 = BasicConv2d(128, channel, 3, 1, 1)  # 128x44x44->32x44x44
-        self.ChannelNormalization_3 = BasicConv2d(320, channel, 3, 1, 1)  # 320x22x22->32x22x22
-        self.ChannelNormalization_4 = BasicConv2d(512, channel, 3, 1, 1)  # 512x11x11->32x11x11
+        self.ChannelNormalization_2 = BasicConv2d(128, channel, 3, 1, 1) # 128x44x44->32x44x44
+        self.ChannelNormalization_3 = BasicConv2d(320, channel, 3, 1, 1) # 320x22x22->32x22x22
+        self.ChannelNormalization_4 = BasicConv2d(512, channel, 3, 1, 1) # 512x11x11->32x11x11
 
         # ACmix 模块，用于特征增强
-        self.ACmix1 = ACmix(64, 64)
-        self.ACmix2 = ACmix(128, 128)
-        self.ACmix3 = ACmix(320, 320)
-        self.ACmix4 = ACmix(512, 512)
+        self.ACmix1 = ACmix(64,64)
+        self.ACmix2 = ACmix(128,128)
+        self.ACmix3 = ACmix(320,320)
+        self.ACmix4 = ACmix(512,512)  
+
+        # 新增 GatedCNNBlock 实例，对应骨干网络不同阶段输出
+        self.gated_cnn_block1 = GatedCNNBlock(dim=64)
+        self.gated_cnn_block2 = GatedCNNBlock(dim=128)
+        self.gated_cnn_block3 = GatedCNNBlock(dim=320)
+        self.gated_cnn_block4 = GatedCNNBlock(dim=512)
+
+                # 初始化 EMSA 分支
+        self.emsa1 = EMSA(d_model=64, d_k=64, d_v=64, h=8, H=88, W=88, ratio=2, apply_transform=True)
+        self.emsa2 = EMSA(d_model=128, d_k=128, d_v=128, h=8, H=44, W=44, ratio=2, apply_transform=True)
+        self.emsa3 = EMSA(d_model=320, d_k=320, d_v=320, h=8, H=22, W=22, ratio=2, apply_transform=True)
+        self.emsa4 = EMSA(d_model=512, d_k=512, d_v=512, h=8, H=11, W=11, ratio=2, apply_transform=True)
+
 
         # 解码器，用于将特征图解码为预测结果
         self.Decoder = Decoder(channel)
@@ -655,34 +446,65 @@ class DBANet(nn.Module):
         # 通过骨干网络进行特征提取
         pvt = self.backbone(x)
         # 提取不同阶段的特征图
-        x1 = pvt[0]  # 64x88x88
-        x2 = pvt[1]  # 128x44x44
-        x3 = pvt[2]  # 320x22x22
-        x4 = pvt[3]  # 512x11x11
+        x1 = pvt[0] # 64x88x88
+        x2 = pvt[1] # 128x44x44
+        x3 = pvt[2] # 320x22x22
+        x4 = pvt[3] # 512x11x11
 
-        # 通过 ARConv 模块对特征图进行增强
-        x1_ar = self.ARConv1(x1, self.epoch, self.hw_range)
-        x2_ar = self.ARConv2(x2, self.epoch, self.hw_range)
-        x3_ar = self.ARConv3(x3, self.epoch, self.hw_range)
-        x4_ar = self.ARConv4(x4, self.epoch, self.hw_range)
+        # 通过 ACmix 模块对特征图进行增强
+        x1_dea = self.ACmix1(x1)
+        x2_dea = self.ACmix2(x2)
+        x3_dea = self.ACmix3(x3)
+        x4_dea = self.ACmix4(x4)
 
-        # 通过 ACmix 模块对 ARConv 处理后的特征图进行增强
-        x1_dea = self.ACmix1(x1_ar)
-        x2_dea = self.ACmix2(x2_ar)
-        x3_dea = self.ACmix3(x3_ar)
-        x4_dea = self.ACmix4(x4_ar)
+        # 调整特征图维度以适应 GatedCNNBlock 输入要求 [B, C, H, W] -> [B, H, W, C]
+        x1_permuted = x1_dea.permute(0, 2, 3, 1)
+        x2_permuted = x2_dea.permute(0, 2, 3, 1)
+        x3_permuted = x3_dea.permute(0, 2, 3, 1)
+        x4_permuted = x4_dea.permute(0, 2, 3, 1)
 
-        # 这里可以根据需要添加额外的处理逻辑，目前直接使用增强后的特征图
-        x1_all = x1_dea
-        x2_all = x2_dea
-        x3_all = x3_dea
-        x4_all = x4_dea
+        # 通过 GatedCNNBlock 处理特征
+        x1_gated = self.gated_cnn_block1(x1_permuted)
+        x2_gated = self.gated_cnn_block2(x2_permuted)
+        x3_gated = self.gated_cnn_block3(x3_permuted)
+        x4_gated = self.gated_cnn_block4(x4_permuted)
+
+        # 调整回原始维度 [B, H, W, C] -> [B, C, H, W]
+        x1_gated = x1_gated.permute(0, 3, 1, 2)
+        x2_gated = x2_gated.permute(0, 3, 1, 2)
+        x3_gated = x3_gated.permute(0, 3, 1, 2)
+        x4_gated = x4_gated.permute(0, 3, 1, 2)
+
+        # 这里可以选择将 GatedCNNBlock 输出替代或融合到原有流程，此处选择融合
+        x1_all = x1_dea + x1_gated
+        x2_all = x2_dea + x2_gated
+        x3_all = x3_dea + x3_gated
+        x4_all = x4_dea + x4_gated
+
+        # EMSA 分支
+        b_s, c1, h1, w1 = x1.shape
+        x1_emsa = self.emsa1(x1.permute(0, 2, 3, 1).reshape(b_s, -1, c1), x1.permute(0, 2, 3, 1).reshape(b_s, -1, c1), x1.permute(0, 2, 3, 1).reshape(b_s, -1, c1)).reshape(b_s, h1, w1, c1).permute(0, 3, 1, 2)
+        
+        b_s, c2, h2, w2 = x2.shape
+        x2_emsa = self.emsa2(x2.permute(0, 2, 3, 1).reshape(b_s, -1, c2), x2.permute(0, 2, 3, 1).reshape(b_s, -1, c2), x2.permute(0, 2, 3, 1).reshape(b_s, -1, c2)).reshape(b_s, h2, w2, c2).permute(0, 3, 1, 2)
+        
+        b_s, c3, h3, w3 = x3.shape
+        x3_emsa = self.emsa3(x3.permute(0, 2, 3, 1).reshape(b_s, -1, c3), x3.permute(0, 2, 3, 1).reshape(b_s, -1, c3), x3.permute(0, 2, 3, 1).reshape(b_s, -1, c3)).reshape(b_s, h3, w3, c3).permute(0, 3, 1, 2)
+        
+        b_s, c4, h4, w4 = x4.shape
+        x4_emsa = self.emsa4(x4.permute(0, 2, 3, 1).reshape(b_s, -1, c4), x4.permute(0, 2, 3, 1).reshape(b_s, -1, c4), x4.permute(0, 2, 3, 1).reshape(b_s, -1, c4)).reshape(b_s, h4, w4, c4).permute(0, 3, 1, 2)
+
+        # 融合原有分支和 EMSA 分支
+        x1_all = x1_all + x1_emsa
+        x2_all = x2_all + x2_emsa
+        x3_all = x3_all + x3_emsa
+        x4_all = x4_all + x4_emsa
 
         # 通过通道归一化层将特征图的通道数统一
-        x1_nor = self.ChannelNormalization_1(x1_all)  # 32x88x88
-        x2_nor = self.ChannelNormalization_2(x2_all)  # 32x44x44
-        x3_nor = self.ChannelNormalization_3(x3_all)  # 32x22x22
-        x4_nor = self.ChannelNormalization_4(x4_all)  # 32x11x11
+        x1_nor = self.ChannelNormalization_1(x1_all) # 32x88x88
+        x2_nor = self.ChannelNormalization_2(x2_all) # 32x44x44
+        x3_nor = self.ChannelNormalization_3(x3_all) # 32x22x22
+        x4_nor = self.ChannelNormalization_4(x4_all) # 32x11x11
 
         # 通过解码器进行解码，得到预测结果
         prediction = self.Decoder(x4_nor, x3_nor, x2_nor, x1_nor)
@@ -690,9 +512,7 @@ class DBANet(nn.Module):
         # 返回原始预测结果和经过 Sigmoid 激活后的预测结果
         return prediction, self.sigmoid(prediction)
 
-
 if __name__ == '__main__':
     # 实例化 DBANet 模型
     model = DBANet()
     # 打印模型的结构
-    print(model)
