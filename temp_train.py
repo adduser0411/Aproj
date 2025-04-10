@@ -27,9 +27,9 @@ formatted_time =datetime.now().strftime('%y%m%d_%H%M')
 
 # ===============================================================
 gpu=5
-data_type='EORSSD' #['ORSSD','EORSSD','ors-4199','RSISOD']
-from models.pvtm import DBANet as Net
-model_name = '_pvtm_'
+data_type='ORSSD' #['ORSSD','EORSSD','ors-4199','RSISOD']
+from models.DBANetMambaOut import DBANet as Net
+model_name = '_DBANetMambaOut_'
 # ===============================================================
 
 
@@ -85,8 +85,8 @@ def train(train_loader, model, optimizer, epoch):
         sal, sal_sig = model(images)
         
         # 在train函数中添加边缘感知损失
-        # loss = CE(sal, gts) + IOU(sal_sig, gts)
-        loss = CE(sal, gts) + IOU(sal_sig, gts) + 0.3*edge_loss(sal_sig, gts)   
+        loss = CE(sal, gts) + IOU(sal_sig, gts)
+        # loss = CE(sal, gts) + IOU(sal_sig, gts) + 0.3*edge_loss(sal_sig, gts)   
 
         loss.backward()
 

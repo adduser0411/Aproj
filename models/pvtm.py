@@ -1,8 +1,12 @@
+import os
+import sys
+sys.path.append(os.getcwd())
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .backbone.pvtv2 import pvt_v2_b2
-import os
+from models.backbone.pvtv2 import pvt_v2_b2
+from models.blocks.ACmixMerge import ACmix
+from models.blocks.Mambaout import GatedCNNBlock
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -13,11 +17,16 @@ from typing import List, Callable
 from torch import Tensor
 import os
 from timm.layers import DropPath
-from .blocks.ACmix import ACmix
-from .blocks.Mambaout import GatedCNNBlock
+
+# 在文件开头添加
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+# from .blocks.ACmixMerge import ACmix
+# from .blocks.Mambaout import GatedCNNBlock
 
 import math
 
+# 250410 ACmix中间两层融合思路验证
 
 class BasicConv2d(nn.Module):
     """
@@ -105,124 +114,48 @@ class BasicConv2dReLu(nn.Module):
         x = self.relu(x)
         return x
 
-
-
 class Decoder(nn.Module):
     def __init__(self, channel):
-        """
-        初始化 Decoder 类。
-
-        参数:
-        channel (int): 通道数，用于定义卷积层的输入和输出通道数。
-        """
-        # 调用父类 nn.Module 的构造函数
         super(Decoder, self).__init__()
-
-        # 定义一个通用的上采样层，用于将特征图的尺寸放大两倍
-        # scale_factor=2 表示放大倍数为 2
-        # mode='bilinear' 表示使用双线性插值进行上采样
-        # align_corners=True 表示对齐角点像素
+        
         self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
 
-        # 解码器第4层，输入为 32x11x11 的特征图
-        # 首先将特征图尺寸放大两倍，然后通过一个基本卷积层进行特征提取
+        # 修改为3层解码器
         self.decoder4 = nn.Sequential(
-            # 上采样层，将特征图尺寸从 32x11x11 放大到 32x22x22
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
-            # 基本卷积层，输入通道数为 32，输出通道数为 32，卷积核大小为 3，填充为 1
-            # 经过该卷积层后，特征图尺寸保持 32x22x22 不变
             BasicConv2d(32, 32, 3, padding=1)
         )
 
-        # 解码器第3层，输入为 32x22x22 的特征图
-        # 同样先将特征图尺寸放大两倍，再通过基本卷积层进行特征提取
-        self.decoder3 = nn.Sequential(
-            # 上采样层，将特征图尺寸从 32x22x22 放大到 32x44x44
-            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
-            # 基本卷积层，输入通道数为 64（因为会和上一层的输出拼接），输出通道数为 32，卷积核大小为 3，填充为 1
-            # 经过该卷积层后，特征图尺寸为 32x44x44
-            BasicConv2d(64, 32, 3, padding=1)
-        )
-
-        # 解码器第2层，输入为 32x44x44 的特征图
-        # 操作与前面两层类似
+        # 直接从x4和x2开始处理，跳过原来的x3层
         self.decoder2 = nn.Sequential(
-            # 上采样层，将特征图尺寸从 32x44x44 放大到 32x88x88
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
-            # 基本卷积层，输入通道数为 64（因为会和上一层的输出拼接），输出通道数为 32，卷积核大小为 3，填充为 1
-            # 经过该卷积层后，特征图尺寸为 32x88x88
-            BasicConv2d(64, 32, 3, padding=1)
+            BasicConv2d(64, 32, 3, padding=1)  # 输入变为64因为只拼接x4和x2
         )
 
-        # 解码器第1层，输入为 32x88x88 的特征图
-        # 只通过一个基本卷积层进行特征提取
         self.decoder1 = nn.Sequential(
-            # 基本卷积层，输入通道数为 64（因为会和上一层的输出拼接），输出通道数为 32，卷积核大小为 3，填充为 1
-            # 经过该卷积层后，特征图尺寸保持 32x88x88 不变
-            BasicConv2d(64, 32, 3, padding=1)
+            BasicConv2d(64, 32, 3, padding=1)  # 输入保持64因为拼接x2和x1
         )
 
-        # 定义一个卷积层，将 32 通道的特征图转换为 1 通道的预测结果
-        # 输入通道数为 channel（即 32），输出通道数为 1，卷积核大小为 1
-        # 经过该卷积层后，特征图尺寸为 1x88x88
         self.conv = nn.Conv2d(channel, 1, 1)
-
-        # 定义一个上采样层，将 1x88x88 的特征图放大 4 倍，得到 1x352x352 的最终预测结果
-        # scale_factor=4 表示放大倍数为 4
-        # mode='bilinear' 表示使用双线性插值进行上采样
-        # align_corners=True 表示对齐角点像素
         self.upsample_4 = nn.Upsample(scale_factor=4, mode='bilinear', align_corners=True)
 
+    def forward(self, x4, x2, x1):
+        # 处理x4 (32x11x11 -> 32x22x22)
+        x4_decoder = self.decoder4(x4)  # 32x22x22
 
-    def forward(self, x4, x3, x2, x1):
-        """
-        前向传播函数，定义解码器的计算流程。
+        # 直接连接x4和x2 (32x22x22 + 32x44x44)
+        # 需要先对x4_decoder进行上采样
+        x4_up = F.interpolate(x4_decoder, scale_factor=2, mode='bilinear', align_corners=True)  # 32x44x44
+        x2_cat = torch.cat([x4_up, x2], dim=1)  # 64x44x44
+        x2_decoder = self.decoder2(x2_cat)  # 32x88x88
 
-        参数:
-        x4 (torch.Tensor): 第4层的特征图，尺寸为 32x11x11
-        x3 (torch.Tensor): 第3层的特征图，尺寸为 32x22x22
-        x2 (torch.Tensor): 第2层的特征图，尺寸为 32x44x44
-        x1 (torch.Tensor): 第1层的特征图，尺寸为 32x88x88
+        # 连接x2和x1
+        x1_cat = torch.cat([x2_decoder, x1], 1)  # 64x88x88
+        x1_decoder = self.decoder1(x1_cat)  # 32x88x88
 
-        返回:
-        torch.Tensor: 最终的预测结果，尺寸为 1x352x352
-        """
-        # 通过解码器第4层处理第4层的特征图
-        # 第4层特征图 x4 尺寸为 32x11x11，经过解码器第4层后尺寸变为 32x22x22
-        x4_decoder = self.decoder4(x4)  # 32*22*22
-
-        # 将第4层解码器的输出和第3层的特征图在通道维度（dim=1）上拼接
-        # x4_decoder 尺寸为 32x22x22，x3 尺寸为 32x22x22，拼接后得到 64x22x22 的特征图
-        x3_cat = torch.cat([x4_decoder, x3], 1)   # 64*22*22
-        # 通过解码器第3层处理拼接后的特征图
-        # 拼接后的特征图 x3_cat 尺寸为 64x22x22，经过解码器第3层后尺寸变为 32x44x44
-        x3_decoder = self.decoder3(x3_cat)
-
-        # 将第3层解码器的输出和第2层的特征图在通道维度（dim=1）上拼接
-        # x3_decoder 尺寸为 32x44x44，x2 尺寸为 32x44x44，拼接后得到 64x44x44 的特征图
-        x2_cat = torch.cat([x3_decoder, x2], 1) # 64*44*44
-        # 通过解码器第2层处理拼接后的特征图
-        # 拼接后的特征图 x2_cat 尺寸为 64x44x44，经过解码器第2层后尺寸变为 32x88x88
-        x2_decoder = self.decoder2(x2_cat)   # 32*88*88
-
-        # 将第2层解码器的输出和第1层的特征图在通道维度（dim=1）上拼接
-        # x2_decoder 尺寸为 32x88x88，x1 尺寸为 32x88x88，拼接后得到 64x88x88 的特征图
-        x1_cat = torch.cat([x2_decoder, x1], 1) # 64*88*88
-        # 通过解码器第1层处理拼接后的特征图
-        # 拼接后的特征图 x1_cat 尺寸为 64x88x88，经过解码器第1层后尺寸变为 32x88x88
-        x1_decoder = self.decoder1(x1_cat)   # 32*88*88
-
-        # 通过卷积层将 32 通道的特征图转换为 1 通道的预测结果
-        # x1_decoder 尺寸为 32x88x88，经过卷积层后尺寸变为 1x88x88
-        x = self.conv(x1_decoder) # 1*88*88
-        # 通过上采样层将 1x88x88 的特征图放大 4 倍，得到最终的预测结果
-        # 上采样后特征图 x 的尺寸变为 1x352x352
-        x = self.upsample_4(x) # 1*352*352
-
+        x = self.conv(x1_decoder)  # 1x88x88
+        x = self.upsample_4(x)  # 1x352x352
         return x
-
- # 定义一个函数来生成位置编码，返回一个包含位置信息的张量
-
 
 
 class DBANet(nn.Module):
@@ -264,11 +197,19 @@ class DBANet(nn.Module):
         self.ChannelNormalization_3 = BasicConv2d(320, channel, 3, 1, 1) # 320x22x22->32x22x22
         self.ChannelNormalization_4 = BasicConv2d(512, channel, 3, 1, 1) # 512x11x11->32x11x11
 
-        # ACmix 模块，用于特征增强
-        self.ACmix1 = ACmix(64,64)
-        self.ACmix2 = ACmix(128,128)
-        self.ACmix3 = ACmix(320,320)
-        self.ACmix4 = ACmix(512,512)  
+        self.tiaozheng = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+            BasicConv2d(320, 128, kernel_size=1, padding=0)  # 使用1x1卷积更高效
+        )
+
+        self.AcMerge=ACmix(128,128)
+
+
+        # # ACmix 模块，用于特征增强
+        # self.ACmix1 = ACmix(64,64)
+        # self.ACmix2 = ACmix(128,128)
+        # self.ACmix3 = ACmix(320,320)
+        # self.ACmix4 = ACmix(512,512)  
 
         # 新增 GatedCNNBlock 实例，对应骨干网络不同阶段输出
         self.gated_cnn_block1 = GatedCNNBlock(dim=64)
@@ -300,17 +241,11 @@ class DBANet(nn.Module):
         x3 = pvt[2] # 320x22x22
         x4 = pvt[3] # 512x11x11
 
-        # 通过 ACmix 模块对特征图进行增强
-        x1_dea = self.ACmix1(x1)
-        x2_dea = self.ACmix2(x2)
-        x3_dea = self.ACmix3(x3)
-        x4_dea = self.ACmix4(x4)
-
         # 调整特征图维度以适应 GatedCNNBlock 输入要求 [B, C, H, W] -> [B, H, W, C]
-        x1_permuted = x1_dea.permute(0, 2, 3, 1)
-        x2_permuted = x2_dea.permute(0, 2, 3, 1)
-        x3_permuted = x3_dea.permute(0, 2, 3, 1)
-        x4_permuted = x4_dea.permute(0, 2, 3, 1)
+        x1_permuted = x1.permute(0, 2, 3, 1)
+        x2_permuted = x2.permute(0, 2, 3, 1)
+        x3_permuted = x3.permute(0, 2, 3, 1)
+        x4_permuted = x4.permute(0, 2, 3, 1)
 
         # 通过 GatedCNNBlock 处理特征
         x1_gated = self.gated_cnn_block1(x1_permuted)
@@ -324,20 +259,22 @@ class DBANet(nn.Module):
         x3_gated = x3_gated.permute(0, 3, 1, 2)
         x4_gated = x4_gated.permute(0, 3, 1, 2)
 
-        # 这里可以选择将 GatedCNNBlock 输出替代或融合到原有流程，此处选择融合
-        x1_all = x1_dea + x1_gated
-        x2_all = x2_dea + x2_gated
-        x3_all = x3_dea + x3_gated
-        x4_all = x4_dea + x4_gated
+        #====将23层使用ACmix2融合==================
+
+        x3_gated=self.tiaozheng(x3_gated)  # 16, 128, 44, 44
+        x2x3= self.AcMerge(x2_gated,x3_gated) # [16, 128, 44, 44]
+        # print(x2x3.shape)
+        # exit()
+
 
         # 通过通道归一化层将特征图的通道数统一
-        x1_nor = self.ChannelNormalization_1(x1_all) # 32x88x88
-        x2_nor = self.ChannelNormalization_2(x2_all) # 32x44x44
-        x3_nor = self.ChannelNormalization_3(x3_all) # 32x22x22
-        x4_nor = self.ChannelNormalization_4(x4_all) # 32x11x11
+        x1_nor = self.ChannelNormalization_1(x1_gated) # 32x88x88
+        x2x3_nor = self.ChannelNormalization_2(x2x3) # 32x44x44
+        # x3_nor = self.ChannelNormalization_3(x3_all) # 32x22x22
+        x4_nor = self.ChannelNormalization_4(x4_gated) # 32x11x11
 
         # 通过解码器进行解码，得到预测结果
-        prediction = self.Decoder(x4_nor, x3_nor, x2_nor, x1_nor)
+        prediction = self.Decoder(x4_nor, x2x3_nor, x1_nor)
 
         # 返回原始预测结果和经过 Sigmoid 激活后的预测结果
         return prediction, self.sigmoid(prediction)
