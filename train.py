@@ -24,7 +24,7 @@ data_root = project_root +'/datasets/RS-SOD/'
 formatted_time =datetime.now().strftime('%y%m%d_%H%M')
 
 # ===============================================================
-torch.cuda.set_device(0)
+torch.cuda.set_device(2)
 data_type='ORSSD' #['ORSSD','EORSSD','ors-4199','RSISOD']
 from models.DBANet_SimAM_ShuffleAttn import DBANet_SimAM_ShuffleAttn as Net
 save_name = formatted_time + '_DBANet+SimAM+ShuffleAttn2_' + data_type
