@@ -1,6 +1,8 @@
+
 import torch
 import torch.nn as nn
 from typing import List
+from models.blocks.ShuffleAttention import ShuffleAttention
 # from .GCSA import GCSA
 class ConvFFN(nn.Module):
 
@@ -73,7 +75,7 @@ class BasicConv2d(nn.Module):
         return x
 
 class EfficientBlock(nn.Module):
-    def __init__(self, channel, kernel_sizes: List[int], mlp_kernel_size: int, mlp_ratio: int, stride: int, mlp_drop=0., drop_path=0.):
+    def __init__(self, channel,outchannel, kernel_sizes: List[int], mlp_kernel_size: int, mlp_ratio: int, stride: int, mlp_drop=0., drop_path=0.):
         super().__init__()
         self.channel = channel
         self.mlp_ratio = mlp_ratio
@@ -84,11 +86,12 @@ class EfficientBlock(nn.Module):
         mlp_hidden_dim = int(channel * mlp_ratio)
         
         self.mlp = ConvFFN(channel, mlp_hidden_dim, mlp_kernel_size, stride, channel, drop_out=mlp_drop)
-        self.conv = BasicConv2d(channel, channel, 3, padding=1)
+        self.conv = BasicConv2d(channel, outchannel, 3, padding=1)
+        self.ShuffleAttention=ShuffleAttention(channel,4)
         
     def forward(self, x: torch.Tensor):
         x1 = x
-        x2 = self.drop_path(self.attn(self.norm1(x)))
+        x2 = self.drop_path(self.ShuffleAttention(self.norm1(x)))
         x3 = self.drop_path(self.mlp(self.norm2(x)))
         
         x_all = x1 + x2 + x3

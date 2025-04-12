@@ -24,9 +24,9 @@ dir_path = os.path.dirname(os.path.abspath(__file__))
 dataset_path =os.path.join( os.path.dirname(dir_path),"datasets/RS-SOD")
 
 # ================================================================
-device = 4
+device = 2
 # m='DBANetARConv'
-path="weights/250409_1403_DBANetMambaOut_ORSSD/250409_1403_DBANetMambaOut_ORSSD.pth.35"
+path="weights/250411_2246_pvtmEfficientBlock_EORSSD/250411_2246_pvtmEfficientBlock_EORSSD.pth.48"
 # from models.DBANetARConv import DBANet as Net
 # ================================================================
 pattern = r'weights/\d{6}_\d{4}_([^_]+)_'

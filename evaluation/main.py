@@ -9,8 +9,8 @@ from dataloader import EvalDataset
 proj_path = osp.dirname(osp.dirname(osp.abspath(__file__) )) 
 
 # =================================================
-os.environ["CUDA_VISIBLE_DEVICES"] = "4"
-weight_path = osp.join(proj_path,'weights/250409_1403_DBANetMambaOut_ORSSD/250409_1403_DBANetMambaOut_ORSSD.pth.35')
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+weight_path = osp.join(proj_path,'weights/250411_2246_pvtmEfficientBlock_EORSSD/250411_2246_pvtmEfficientBlock_EORSSD.pth.48')
 # =================================================
 
 filename = os.path.basename(weight_path)
