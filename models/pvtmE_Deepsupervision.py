@@ -167,6 +167,33 @@ class Decoder(nn.Module):
         x = self.upsample_4(x)  # 1x352x352
         return x
 
+class Decode_mid_layer(nn.Module):
+    def __init__(self, channel):
+        super(Decode_mid_layer, self).__init__()
+
+        # 添加用于深度监督的解码层
+        self.decode_x1nor = nn.Sequential(
+            # BasicConv2d(32, 32, 3, padding=1),
+            nn.Conv2d(32, 1, 1),
+            nn.Upsample(scale_factor=4, mode='bilinear', align_corners=True)
+        )
+        
+        self.decode_x23nor = nn.Sequential(
+            # BasicConv2d(32, 32, 3, padding=1),
+            nn.Conv2d(32, 1, 1),
+            nn.Upsample(scale_factor=8, mode='bilinear', align_corners=True)
+        )
+        
+        self.decode_x4nor = nn.Sequential(
+            # BasicConv2d(32, 32, 3, padding=1),
+            nn.Conv2d(32, 1, 1),
+            nn.Upsample(scale_factor=32, mode='bilinear', align_corners=True)
+        )
+    def forward(self, x1, x23, x4):
+        x1 = self.decode_x1nor(x1)
+        x23 = self.decode_x23nor(x23)
+        x4 = self.decode_x4nor(x4)
+        return x1, x23, x4
 
 class DBANet(nn.Module):
     """
@@ -230,6 +257,9 @@ class DBANet(nn.Module):
         # 解码器，用于将特征图解码为预测结果
         self.Decoder = Decoder(channel)
 
+        #中间层解码器,用于解码中间层特征图
+        self.Decode_mid_layer = Decode_mid_layer(channel=32)
+
         # Sigmoid 激活函数，用于将输出转换为概率值
         self.sigmoid = nn.Sigmoid()
 
@@ -284,13 +314,17 @@ class DBANet(nn.Module):
         x4_nor = self.ChannelNormalization_4(x4_gated) # 32x11x11
 
         # 通过解码器进行解码，得到预测结果
-        prediction = self.Decoder(x4_nor, x2x3_nor, x1_nor)
+        prediction = self.Decoder(x4_nor, x2x3_nor, x1_nor) # 1, 352, 352
 
+        # 分别获取中间层的解码结果,用于深度监督
+        x1_dec, x23_dec, x4_dec = self.Decode_mid_layer(x1_nor, x2x3_nor, x4_nor) # 1, 352, 352
         # 返回原始预测结果和经过 Sigmoid 激活后的预测结果
-        return prediction, self.sigmoid(prediction)
-
+        return prediction, self.sigmoid(prediction),x1_dec,self.sigmoid(x1_dec),x23_dec,self.sigmoid(x23_dec),x4_dec,self.sigmoid(x4_dec)  # 1, 352, 352
 if __name__ == '__main__':
     # 实例化 DBANet 模型
     model = DBANet()
     # 打印模型的结构
     print(model)
+    # 创建一个随机输入张量，尺寸为 [batch_size, 3, 352, 352]
+    x = torch.randn(16, 3, 352, 352)
+    model(x)

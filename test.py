@@ -26,13 +26,14 @@ dataset_path =os.path.join( os.path.dirname(dir_path),"datasets/RS-SOD")
 # ================================================================
 device = 2
 # m='DBANetARConv'
-path="weights/250411_2246_pvtmEfficientBlock_EORSSD/250411_2246_pvtmEfficientBlock_EORSSD.pth.48"
+path="weights/250414_1211_pvtmE+Deepsupervision_EORSSD/250414_1211_pvtmE+Deepsupervision_EORSSD.pth.45"
 # from models.DBANetARConv import DBANet as Net
 # ================================================================
 pattern = r'weights/\d{6}_\d{4}_([^_]+)_'
 match = re.search(pattern, path)
 if match:
     m = match.group(1)
+    m = m.replace('+', '_')
     print(f"提取的模型名是: {m}")
 else:
     print("未匹配到模型名")
@@ -96,7 +97,7 @@ for dataset in test_datasets:
         gt /= (gt.max() + 1e-8)
         image = image.cuda()
         time_start = time.time()
-        res, sal_sig = model(image)
+        res, sal_sig,_,_,_,_,_,_= model(image)
         time_end = time.time()
         time_sum = time_sum+(time_end-time_start)
         # 修改此处，使用 nn.functional.interpolate 替代 nn.functional.upsample
