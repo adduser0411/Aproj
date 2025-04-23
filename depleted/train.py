@@ -13,8 +13,10 @@ from datetime import datetime
 
 from utils.loader import get_loader
 from utils.utils import clip_gradient, adjust_lr
+from models.blocks.EdgeLoss import EdgeLoss
 
 import utils.pytorch_iou as pytorch_iou
+
 
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, message="Overwriting.*")
@@ -24,34 +26,35 @@ data_root = project_root +'/datasets/RS-SOD/'
 formatted_time =datetime.now().strftime('%y%m%d_%H%M')
 
 # ===============================================================
-torch.cuda.set_device(2)
-data_type='ORSSD' #['ORSSD','EORSSD','ors-4199','RSISOD']
-from models.DBANet_SimAM_ShuffleAttn import DBANet_SimAM_ShuffleAttn as Net
-save_name = formatted_time + '_DBANet+SimAM+ShuffleAttn2_' + data_type
+gpu=3
+data_type='EORSSD' #['ORSSD','EORSSD','ors-4199','RSISOD']
+from models.pvtmEfficientBlock import DBANet as Net
+model_name = '_pvtmEfficientBlock_'
 # ===============================================================
 
 
 model = Net()
-save_path = './weights/'+ save_name
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--epoch', type=int, default=45, help='epoch number')
+parser.add_argument('--data_type', type=str, default=data_type, help='choose dataset')
+parser.add_argument('--gpu', type=int, default=gpu, help='set gpu id')
+parser.add_argument('--epoch', type=int, default=50, help='epoch number')
 parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
 # parser.add_argument('--batchsize', type=int, default=8, help='training batch size')
-parser.add_argument('--batchsize', type=int, default=12, help='training batch size')
+parser.add_argument('--batchsize', type=int, default=16, help='training batch size')
 parser.add_argument('--trainsize', type=int, default=352, help='training dataset size')
 parser.add_argument('--clip', type=float, default=0.5, help='gradient clipping margin')
 parser.add_argument('--decay_rate', type=float, default=0.1, help='decay rate of learning rate')
 parser.add_argument('--decay_epoch', type=int, default=30, help='every n epochs decay learning rate')
 opt = parser.parse_args() #
-
-
-model.cuda() 
+torch.cuda.set_device(opt.gpu)
+model.cuda()
+print("## device ## :", opt.gpu)
 params = model.parameters()
 optimizer = torch.optim.Adam(params, opt.lr)
 # 改用 AdamW 优化器
 # optimizer = torch.optim.AdamW(params, opt.lr, weight_decay=0.01)
-
+data_type=opt.data_type
 image_root=data_root+data_type+'_aug/train/images/'
 gt_root=data_root+data_type+'_aug/train/gt/'
 train_loader = get_loader(image_root, gt_root, batchsize=opt.batchsize, trainsize=opt.trainsize)
@@ -59,8 +62,11 @@ total_step = len(train_loader)
 
 CE = torch.nn.BCEWithLogitsLoss()
 IOU = pytorch_iou.IOU(size_average = True)
+edge_loss = EdgeLoss()
 
 
+save_name = formatted_time + model_name + data_type
+save_path = './weights/'+ save_name
 
 def train(train_loader, model, optimizer, epoch):
     model.train()
@@ -76,10 +82,27 @@ def train(train_loader, model, optimizer, epoch):
         images = images.cuda()
         gts = gts.cuda()
 
+        # #================深度监督损失【
+        # # sal, sal_sig = model(images)
+        # s1, s2, s3,  s1_sig, s2_sig, s3_sig = model(images)
+
+        # loss1 = CE(s1, gts) + IOU(s1_sig, gts)
+        # loss2 = CE(s2, gts) + IOU(s2_sig, gts)
+        # loss3 = CE(s3, gts) + IOU(s3_sig, gts)
+
+        # loss = loss1 + loss2 + loss3 
+
+        # loss.backward()
+        # #=================】
+
+
+        #=================损失函数【
         sal, sal_sig = model(images)
-        loss = CE(sal, gts) + IOU(sal_sig, gts)
+        # loss = CE(sal, gts) + IOU(sal_sig, gts)  #初始损失函数
+        loss = CE(sal, gts) + IOU(sal_sig, gts) + 0.3*edge_loss(sal_sig, gts)   # 在train函数中添加边缘感知损失
 
         loss.backward()
+        #=================】
 
         clip_gradient(optimizer, opt.clip)
         optimizer.step()
@@ -93,9 +116,9 @@ def train(train_loader, model, optimizer, epoch):
             # train_loader.set_description(f'Epoch {epoch}/{opt.epoch}, Loss: {loss.data:.4f}, LR: {opt.lr * opt.decay_rate ** (epoch // opt.decay_epoch):.6f}')
 
     
-    if not os.path.exists(save_path):
-        os.makedirs(save_path)
-    if (epoch+1) > 38:
+    if (epoch+1) > 35:
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
         torch.save(model.state_dict(), save_path + '/' + save_name + '.pth' + '.%d' % epoch, _use_new_zipfile_serialization=False)
 
 print("Let's go!")

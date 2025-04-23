@@ -5,7 +5,7 @@ from functools import partial
 
 from timm.layers import DropPath, to_2tuple, trunc_normal_
 from timm.models import register_model
-from timm.models.vision_transformer import _cfg
+# from timm.models.vision_transformer import _cfg
 
 import math
 

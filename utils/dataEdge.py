@@ -64,41 +64,33 @@ def randomPeper(img):
     noiseNum=int(0.0015*img.shape[0]*img.shape[1])
     for i in range(noiseNum):
 
-        randX=random.randint(0,img.shape[0]-1)  
+        randX=random.randint(0,img.shape[0]-1)
 
-        randY=random.randint(0,img.shape[1]-1)  
+        randY=random.randint(0,img.shape[1]-1)
 
-        if random.randint(0,1)==0:  
+        if random.randint(0,1)==0:
 
-            img[randX,randY]=0  
+            img[randX,randY]=0
 
-        else:  
+        else:
 
-            img[randX,randY]=255 
-    return Image.fromarray(img) 
-
+            img[randX,randY]=255
+    return Image.fromarray(img)
 
 class SalObjDataset(data.Dataset):
-    def __init__(self, image_root, gt_root, trainsize):
+    def __init__(self, image_root, gt_root, edge_root, trainsize):
         self.trainsize = trainsize
         self.images = [image_root + f for f in os.listdir(image_root) if f.endswith('.jpg')]
         self.gts = [gt_root + f for f in os.listdir(gt_root) if f.endswith('.jpg')
                     or f.endswith('.png')]
+        self.edges = [edge_root + f for f in os.listdir(edge_root) if f.endswith('.jpg')
+                   or f.endswith('.png')]
         self.images = sorted(self.images)
         # self.depths = sorted(self.depths)
         self.gts = sorted(self.gts)
+        self.edges = sorted(self.edges)
         self.filter_files()
         self.size = len(self.images)
-
-            # 添加颜色抖动变换
-        self.color_jitter = transforms.ColorJitter(
-            brightness=0.2,
-            contrast=0.2,
-            saturation=0.2,
-            hue=0.1
-            )
-
-    
         self.img_transform = transforms.Compose([
             transforms.Resize((self.trainsize, self.trainsize)),
             transforms.ToTensor(),
@@ -108,10 +100,14 @@ class SalObjDataset(data.Dataset):
             transforms.Resize((self.trainsize, self.trainsize)),
             transforms.ToTensor()])
 
+        self.edge_transform = transforms.Compose([
+            transforms.Resize((self.trainsize, self.trainsize)),
+            transforms.ToTensor()])
 
     def __getitem__(self, index):
         image = self.rgb_loader(self.images[index])
         gt = self.binary_loader(self.gts[index])
+        edge = self.binary_loader(self.edges[index])
         # image,gt =cv_random_flip(image,gt)
         # image,gt =randomCrop(image, gt)
         # image,gt =randomRotation(image, gt)
@@ -119,21 +115,26 @@ class SalObjDataset(data.Dataset):
         # gt=randomPeper(gt)
         image = self.img_transform(image)
         gt = self.gt_transform(gt)
-        return image, gt
+        edge = self.gt_transform(edge)
+        return image, gt, edge
 
     def filter_files(self):
         assert len(self.images) == len(self.gts)
         images = []
         # depths = []
         gts = []
-        for img_path, gt_path in zip(self.images, self.gts):
+        edges = []
+        for img_path, gt_path, edge_path in zip(self.images, self.gts, self.edges):
             img = Image.open(img_path)
             gt = Image.open(gt_path)
+            edge = Image.open(edge_path)
             if img.size == gt.size:
                 images.append(img_path)
                 gts.append(gt_path)
+                edges.append(edge_path)
         self.images = images
         self.gts = gts
+        self.edges = edges
 
     def rgb_loader(self, path):
         with open(path, 'rb') as f:
@@ -146,29 +147,31 @@ class SalObjDataset(data.Dataset):
             # return img.convert('1')
             return img.convert('L')
 
-    def resize(self, img, gt):
+    def resize(self, img, gt, edge):
         assert img.size == gt.size
         w, h = img.size
         if h < self.trainsize or w < self.trainsize:
             h = max(h, self.trainsize)
             w = max(w, self.trainsize)
-            return img.resize((w, h), Image.BILINEAR), gt.resize((w, h), Image.NEAREST)
+            return img.resize((w, h), Image.BILINEAR), gt.resize((w, h), Image.NEAREST), edge.resize((w, h), Image.NEAREST)
         else:
-            return img, gt
+            return img, gt, edge
 
     def __len__(self):
         return self.size
 
 
-def get_loader(image_root, gt_root, batchsize, trainsize, shuffle=True, num_workers=12, pin_memory=True):
 
-    dataset = SalObjDataset(image_root, gt_root, trainsize)
+def get_loader(image_root, gt_root, edge_root, batchsize, trainsize, shuffle=True, num_workers=12, pin_memory=True):
+
+    dataset = SalObjDataset(image_root, gt_root, edge_root, trainsize)
     data_loader = data.DataLoader(dataset=dataset,
                                   batch_size=batchsize,
                                   shuffle=shuffle,
                                   num_workers=num_workers,
                                   pin_memory=pin_memory)
     return data_loader
+
 
 
 class test_dataset:
@@ -196,6 +199,7 @@ class test_dataset:
         if name.endswith('.jpg'):
             name = name.split('.jpg')[0] + '.png'
         self.index = (self.index+1)%self.size
+        
         return image, gt, name
 
     def rgb_loader(self, path):
