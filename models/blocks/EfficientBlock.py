@@ -86,7 +86,8 @@ class EfficientBlock(nn.Module):
         mlp_hidden_dim = int(channel * mlp_ratio)
         
         self.mlp = ConvFFN(channel, mlp_hidden_dim, mlp_kernel_size, stride, channel, drop_out=mlp_drop)
-        self.conv = BasicConv2d(channel, outchannel, 3, padding=1)
+        # self.conv = BasicConv2d(channel, outchannel, 3, padding=1)
+        self.conv = BasicConv2d(channel, channel, 3, padding=1)   #0421师兄调整
         self.ShuffleAttention=ShuffleAttention(channel,4)
         
     def forward(self, x: torch.Tensor):
@@ -95,6 +96,7 @@ class EfficientBlock(nn.Module):
         x3 = self.drop_path(self.mlp(self.norm2(x)))
         
         x_all = x1 + x2 + x3
-        x_all = self.conv(x_all)
+        # x_all = self.conv(x_all)   
+        x_all = self.conv(x_all)+x  #0421师兄调整
 
         return x_all

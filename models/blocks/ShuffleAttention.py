@@ -7,12 +7,13 @@ from torch.nn.parameter import Parameter
 
 class ShuffleAttention(nn.Module):
     # 初始化Shuffle Attention模块
-    def __init__(self, channel=512, reduction=16, G=8):
+    def __init__(self, channel=64, reduction=16, G=8):
         super().__init__()
         self.G = G  # 分组数量
         self.channel = channel  # 通道数
         self.avg_pool = nn.AdaptiveAvgPool2d(1)  # 全局平均池化，用于生成通道注意力
         self.gn = nn.GroupNorm(channel // (2 * G), channel // (2 * G))  # 分组归一化，用于空间注意力
+        # self.gn = nn.GroupNorm(max(1, (channel//(2*G)) // 4), num_channels=channel//(2*G))
         # 以下为通道注意力和空间注意力的权重和偏置参数
         self.cweight = Parameter(torch.zeros(1, channel // (2 * G), 1, 1))
         self.cbias = Parameter(torch.ones(1, channel // (2 * G), 1, 1))
@@ -72,7 +73,7 @@ class ShuffleAttention(nn.Module):
 
 # 输入 N C H W,  输出 N C H W
 if __name__ == '__main__':
-    input = torch.randn(50, 512, 7, 7)
-    se = ShuffleAttention(channel=512, G=8)
+    input = torch.randn(8, 64, 352, 352)
+    se = ShuffleAttention(channel=64, G=8)
     output = se(input)
     print(output.shape)

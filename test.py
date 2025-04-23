@@ -18,7 +18,7 @@ warnings.filterwarnings("ignore", category=UserWarning, message="Overwriting.*")
 proj_path = os.path.dirname(os.path.abspath(__file__) ) 
 
 # parser = argparse.ArgumentParser()
-# opt = parser.parse_args()
+# opt = parser.parse_args() 
 
 dir_path = os.path.dirname(os.path.abspath(__file__))
 dataset_path =os.path.join( os.path.dirname(dir_path),"datasets/RS-SOD")
@@ -26,7 +26,7 @@ dataset_path =os.path.join( os.path.dirname(dir_path),"datasets/RS-SOD")
 # ================================================================
 device = 2
 # m='DBANetARConv'
-path="weights/250414_1211_pvtmE+Deepsupervision_EORSSD/250414_1211_pvtmE+Deepsupervision_EORSSD.pth.45"
+path="weights/250423_0003_enhancedpvtme_EORSSD/250423_0003_enhancedpvtme_EORSSD.pth.37"
 # from models.DBANetARConv import DBANet as Net
 # ================================================================
 pattern = r'weights/\d{6}_\d{4}_([^_]+)_'
@@ -97,7 +97,8 @@ for dataset in test_datasets:
         gt /= (gt.max() + 1e-8)
         image = image.cuda()
         time_start = time.time()
-        res, sal_sig,_,_,_,_,_,_= model(image)
+        # res, sal_sig,_,_,_,_,_,_= model(image)
+        res, sal_sig= model(image)
         time_end = time.time()
         time_sum = time_sum+(time_end-time_start)
         # 修改此处，使用 nn.functional.interpolate 替代 nn.functional.upsample

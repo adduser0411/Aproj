@@ -14,13 +14,11 @@ import pdb, os, argparse
 from datetime import datetime
 
 from utils.loader import get_loader
-# from utils.dataEdge import get_loader
 from utils.utils import clip_gradient, adjust_lr
 from models.blocks.EdgeLoss import EdgeLoss
 # from utils.data import test_dataset
 import utils.pytorch_iou as pytorch_iou
-# from utils.data_gt2tenser import test_dataset
-from utils.data import test_dataset
+from utils.data_gt2tenser import test_dataset
 import logging
 
 
@@ -34,8 +32,8 @@ formatted_time =datetime.now().strftime('%y%m%d_%H%M')
 # ===============================================================
 gpu=0
 data_type='EORSSD' #['ORSSD','EORSSD','ors-4199','RSISOD']
-from models.pvtmEfficientBlock import DBANet as Net
-model_name = '_pvtmEfficientBlock_'
+from models.pvtmE_Deepsupervision import DBANet as Net
+model_name = '_pvtmE+Deepsupervision_'
 # ===============================================================
 
 
@@ -45,12 +43,16 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--data_type', type=str, default=data_type, help='choose dataset')
 parser.add_argument('--gpu', type=int, default=gpu, help='set gpu id')
 parser.add_argument('--epoch', type=int, default=50, help='epoch number')
-parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
+parser.add_argument('--lr', type=float, default=3e-4, help='learning rate')
 parser.add_argument('--batchsize', type=int, default=16, help='training batch size')
 parser.add_argument('--trainsize', type=int, default=352, help='training dataset size')
 parser.add_argument('--clip', type=float, default=0.5, help='gradient clipping margin')
-parser.add_argument('--decay_rate', type=float, default=0.1, help='decay rate of learning rate')
+parser.add_argument('--decay_rate', type=float, default=0.95, help='decay rate of learning rate')
 parser.add_argument('--decay_epoch', type=int, default=30, help='every n epochs decay learning rate')
+# 新增学习率参数
+parser.add_argument('--min_lr', type=float, default=1e-6, help='minimum learning rate')  # 新增最小学习率限制
+parser.add_argument('--warmup_epochs', type=int, default=5, help='warmup epochs')  # 新增预热阶段
+
 opt = parser.parse_args() #
 torch.cuda.set_device(opt.gpu)
 model.cuda()
@@ -60,9 +62,6 @@ optimizer = torch.optim.Adam(params, opt.lr)
 data_type=opt.data_type
 image_root=data_root+data_type+'_aug/train/images/'
 gt_root=data_root+data_type+'_aug/train/gt/'
-#这里设置选用边缘数据集
-# edge_root=data_root+data_type+'_aug/train/edge/'
-# train_loader = get_loader(image_root, gt_root,edge_root, batchsize=opt.batchsize, trainsize=opt.trainsize)
 train_loader = get_loader(image_root, gt_root, batchsize=opt.batchsize, trainsize=opt.trainsize)
 total_step = len(train_loader)
 
@@ -124,9 +123,9 @@ def train(train_loader, model, optimizer, epoch):
 
         # 加权总损失
         # loss = loss_main + 0.5*loss_x1 + 0.5*loss_x23 + 0.5*loss_x4
-        # loss = loss_main + 0.5*loss_x1 + 0.5*loss_x23 + 0.5*loss_x4  + 0.3*edge_loss(pred_sig, gts) #带上边缘损失
+        loss = loss_main + 0.5*loss_x1 + 0.5*loss_x23 + 0.5*loss_x4  + 0.3*edge_loss(pred_sig, gts) #带上边缘损失
         # loss = loss_main + 0.6*loss_x1 + 0.4*loss_x23 + 0.3*loss_x4 # 渐进式权重
-        loss = loss_main + 0.6*loss_x1 + 0.4*loss_x23 + 0.3*loss_x4  + 0.3*edge_loss(pred_sig, gts)  #渐进权重带边缘损失
+        # loss = loss_main + 0.6*loss_x1 + 0.4*loss_x23 + 0.3*loss_x4  + 0.3*edge_loss(pred_sig, gts)  #渐进权重带边缘损失
 
         loss.backward()
         #=================】
@@ -150,7 +149,8 @@ def train(train_loader, model, optimizer, epoch):
         
         if(is_foreground()):
             if hasattr(wrapped_loader, 'set_description'):
-                wrapped_loader.set_description(f'{current_time} Epoch [{epoch}/{opt.epoch}], Loss: {loss.data:.4f} ')
+                current_lr = optimizer.param_groups[0]['lr']
+                wrapped_loader.set_description(f'{current_time} Epoch [{epoch}/{opt.epoch}], Loss: {loss.data:.4f}，LR:{current_lr:.3e}')
         else:
             if i % 20 == 0 or i == total_step:
                 print(f'{current_time} Epoch [{epoch:03d}/{opt.epoch:03d}], Step [{i:04d}/{total_step:04d}], Learning Rate: {opt.lr * opt.decay_rate ** (epoch // opt.decay_epoch)}, Loss: {loss.data:.4f} ')
@@ -251,10 +251,35 @@ def test(test_loader, model, epoch, save_path):
         logging.info('#TEST#:Epoch:{} MAE:{} maxF:{}'.format(epoch, mae, maxF))
         logging.info('#TEST#:best_epochMAE:{} bestMAE:{} '.format(best_epochM, best_mae))
         logging.info('#TEST#:best_epochmaxF:{} bestmaxF:{} '.format(best_epochF, best_Fmax))
+        # 在test函数返回时添加：
+        return mae, maxF  # 返回评估指标        
 
+# 修改原有adjust_lr函数为余弦退火衰减：
+def adjust_lr2(optimizer, base_lr, epoch, decay_rate, decay_epoch):
+    # 余弦退火衰减
+    lr = base_lr * 0.5 * (1 + np.cos(np.pi * epoch / opt.epoch))
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = max(lr, opt.min_lr)
+        
 # 修改主训练循环
 for epoch in tqdm.trange(1, opt.epoch, desc="Training Epochs", unit="epoch", mininterval=20):
-    adjust_lr(optimizer, opt.lr, epoch, opt.decay_rate, opt.decay_epoch)
+    # 新增学习率预热（放在adjust_lr之前）
+    if epoch <= opt.warmup_epochs:
+        lr = opt.lr * (epoch / opt.warmup_epochs) ** 2  # 渐进式预热
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = lr
+    else:
+        adjust_lr2(optimizer, opt.lr, epoch, opt.decay_rate, opt.decay_epoch)
+
+    # 添加学习率下限保护
+    for param_group in optimizer.param_groups:
+        if param_group['lr'] < opt.min_lr:
+            param_group['lr'] = opt.min_lr
+            
     train(train_loader, model, optimizer, epoch)
-    if epoch > 30 :  # 与原来的保存条件保持一致
-        test(test_loader, model, epoch, save_path)
+    if epoch > 20 :  # 与原来的保存条件保持一致
+        mae, maxF = test(test_loader, model, epoch, save_path)
+        # 根据测试指标动态调整
+        if maxF < 0.8 and epoch > opt.warmup_epochs:  # 当指标不理想时
+            for param_group in optimizer.param_groups:
+                param_group['lr'] *= 0.9  # 小幅降低学习率

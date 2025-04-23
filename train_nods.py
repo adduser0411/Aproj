@@ -1,3 +1,4 @@
+'''不包含深度监督的train脚本'''
 import time
 import numpy as np
 import torch
@@ -19,10 +20,10 @@ from utils.utils import clip_gradient, adjust_lr
 from models.blocks.EdgeLoss import EdgeLoss
 # from utils.data import test_dataset
 import utils.pytorch_iou as pytorch_iou
-# from utils.data_gt2tenser import test_dataset
-from utils.data import test_dataset
+from utils.data_gt2tenser import test_dataset
+# from utils.data import test_dataset6
 import logging
-
+#重构
 
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, message="Overwriting.*")
@@ -32,10 +33,10 @@ data_root = project_root +'/datasets/RS-SOD/'
 formatted_time =datetime.now().strftime('%y%m%d_%H%M')
 
 # ===============================================================
-gpu=0
+gpu=1
 data_type='EORSSD' #['ORSSD','EORSSD','ors-4199','RSISOD']
-from models.pvtmEfficientBlock import DBANet as Net
-model_name = '_pvtmEfficientBlock_'
+from models.enhancedpvtme import DBANet as Net
+model_name = '_enhancedpvtme_'
 # ===============================================================
 
 
@@ -46,7 +47,7 @@ parser.add_argument('--data_type', type=str, default=data_type, help='choose dat
 parser.add_argument('--gpu', type=int, default=gpu, help='set gpu id')
 parser.add_argument('--epoch', type=int, default=50, help='epoch number')
 parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
-parser.add_argument('--batchsize', type=int, default=16, help='training batch size')
+parser.add_argument('--batchsize', type=int, default=8, help='training batch size')
 parser.add_argument('--trainsize', type=int, default=352, help='training dataset size')
 parser.add_argument('--clip', type=float, default=0.5, help='gradient clipping margin')
 parser.add_argument('--decay_rate', type=float, default=0.1, help='decay rate of learning rate')
@@ -60,7 +61,6 @@ optimizer = torch.optim.Adam(params, opt.lr)
 data_type=opt.data_type
 image_root=data_root+data_type+'_aug/train/images/'
 gt_root=data_root+data_type+'_aug/train/gt/'
-#这里设置选用边缘数据集
 # edge_root=data_root+data_type+'_aug/train/edge/'
 # train_loader = get_loader(image_root, gt_root,edge_root, batchsize=opt.batchsize, trainsize=opt.trainsize)
 train_loader = get_loader(image_root, gt_root, batchsize=opt.batchsize, trainsize=opt.trainsize)
@@ -112,34 +112,34 @@ def train(train_loader, model, optimizer, epoch):
         gts = gts.cuda()
 
         
-        #================深度监督损失【
-        # sal, sal_sig = model(images)
-        pred, pred_sig, x1, x1_sig, x23, x23_sig, x4, x4_sig = model(images)
+        # #================深度监督损失【
+        # # sal, sal_sig = model(images)
+        # pred, pred_sig, x1, x1_sig, x23, x23_sig, x4, x4_sig = model(images)
 
-        # 计算各层损失
-        loss_main = CE(pred, gts) + IOU(pred_sig, gts)
-        loss_x1 = CE(x1, gts) + IOU(x1_sig, gts)
-        loss_x23 = CE(x23, gts) + IOU(x23_sig, gts) 
-        loss_x4 = CE(x4, gts) + IOU(x4_sig, gts)
+        # # 计算各层损失
+        # loss_main = CE(pred, gts) + IOU(pred_sig, gts)
+        # loss_x1 = CE(x1, gts) + IOU(x1_sig, gts)
+        # loss_x23 = CE(x23, gts) + IOU(x23_sig, gts) 
+        # loss_x4 = CE(x4, gts) + IOU(x4_sig, gts)
 
-        # 加权总损失
-        # loss = loss_main + 0.5*loss_x1 + 0.5*loss_x23 + 0.5*loss_x4
-        # loss = loss_main + 0.5*loss_x1 + 0.5*loss_x23 + 0.5*loss_x4  + 0.3*edge_loss(pred_sig, gts) #带上边缘损失
-        # loss = loss_main + 0.6*loss_x1 + 0.4*loss_x23 + 0.3*loss_x4 # 渐进式权重
-        loss = loss_main + 0.6*loss_x1 + 0.4*loss_x23 + 0.3*loss_x4  + 0.3*edge_loss(pred_sig, gts)  #渐进权重带边缘损失
-
-        loss.backward()
-        #=================】
-
-
-        # #================CE+IOU损失【
-        # sal, sal_sig,_,_,_,_,_,_ = model(images)
-        # # 在train函数中添加边缘感知损失
-        # loss = CE(sal, gts) + IOU(sal_sig, gts)
-        # # loss = CE(sal, gts) + IOU(sal_sig, gts) + 0.3*edge_loss(sal_sig, gts) 
+        # # 加权总损失
+        # # loss = loss_main + 0.5*loss_x1 + 0.5*loss_x23 + 0.5*loss_x4
+        # # loss = loss_main + 0.5*loss_x1 + 0.5*loss_x23 + 0.5*loss_x4  + 0.3*edge_loss(pred_sig, gts) #带上边缘损失
+        # # loss = loss_main + 0.6*loss_x1 + 0.4*loss_x23 + 0.3*loss_x4 # 渐进式权重
+        # loss = loss_main + 0.6*loss_x1 + 0.4*loss_x23 + 0.3*loss_x4  + 0.3*edge_loss(pred_sig, gts)  #渐进权重带边缘损失
 
         # loss.backward()
-        # # #=================】
+        # #=================】
+
+
+        #================CE+IOU损失【
+        sal, sal_sig = model(images)
+        # 在train函数中添加边缘感知损失
+        loss = CE(sal, gts) + IOU(sal_sig, gts)
+        # loss = CE(sal, gts) + IOU(sal_sig, gts) + 0.3*edge_loss(sal_sig, gts) 
+
+        loss.backward()
+        # #=================】
 
 
         clip_gradient(optimizer, opt.clip)
@@ -210,7 +210,7 @@ def test(test_loader, model, epoch, save_path):
             gt2tensor = gt2tensor.cuda()
             
             time_start = time.time()
-            res, sal_sig,_,_,_,_,_,_ = model(image)
+            res, sal_sig = model(image)
             time_end = time.time()
             time_sum += (time_end - time_start)
             
