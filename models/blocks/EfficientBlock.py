@@ -86,10 +86,10 @@ class EfficientBlock(nn.Module):
         super().__init__()
         self.channel = channel
         self.mlp_ratio = mlp_ratio
-        self.norm1 = nn.GroupNorm(1, channel)
+        self.norm1 = nn.GroupNorm(4, channel)
         # self.attn = GCSA(channel)
         self.drop_path = DropPath(drop_path)
-        self.norm2 = nn.GroupNorm(1, channel)
+        self.norm2 = nn.GroupNorm(4, channel)
         mlp_hidden_dim = int(channel * mlp_ratio)
         
         self.mlp = ConvFFN(channel, mlp_hidden_dim, mlp_kernel_size, stride, channel, drop_out=mlp_drop)
