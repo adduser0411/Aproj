@@ -33,7 +33,7 @@ data_root = project_root +'/datasets/RS-SOD/'
 formatted_time =datetime.now().strftime('%y%m%d_%H%M')
 
 # ===============================================================
-gpu=1
+gpu=4
 data_type='EORSSD' #['ORSSD','EORSSD','ors-4199','RSISOD']
 from models.enhancedpvtme import DBANet as Net
 model_name = '_enhancedpvtme_'

@@ -31,9 +31,16 @@ class ConvFFN(nn.Module):
 class DropPath(nn.Module):
     def __init__(self, drop_prob=0.):
         super().__init__()
+        self.drop_prob = drop_prob  # 添加drop_prob成员变量
 
     def forward(self, x):
+        if self.training and self.drop_prob > 0:  # 只在训练时且drop_prob>0时执行
+            keep_prob = 1 - self.drop_prob
+            # 生成与batch维度相同的随机mask
+            mask = torch.rand(x.shape[0], 1, 1, 1, device=x.device) < keep_prob
+            return x * mask / keep_prob  # 缩放以保持期望值不变
         return x
+    
 class BasicConv2d(nn.Module):
     """
     定义一个二维卷积层，包含卷积、批量归一化和 ReLU 激活函数。
@@ -92,11 +99,19 @@ class EfficientBlock(nn.Module):
         
     def forward(self, x: torch.Tensor):
         x1 = x
-        x2 = self.drop_path(self.ShuffleAttention(self.norm1(x)))
-        x3 = self.drop_path(self.mlp(self.norm2(x)))
+
+        x2 = x
+        x2 = self.norm1(x2)
+        x2 = self.ShuffleAttention(x2)
+        x2 = self.drop_path(x2)
+
+        x3 = x
+        x3 = self.norm2(x3)
+        x3 = self.mlp(x3)
+        x3 = self.drop_path(x3)
         
         x_all = x1 + x2 + x3
-        # x_all = self.conv(x_all)   
-        x_all = self.conv(x_all)+x  #0421师兄调整
+        x_all = self.conv(x_all)
+        x_all = self.conv(x_all) + x1  #0421师兄调整
 
         return x_all
