@@ -1,6 +1,4 @@
-
-
-
+'''师兄加层0421'''
 import os
 import sys
 sys.path.append(os.getcwd())
@@ -133,6 +131,8 @@ class Decoder(nn.Module):
         # 直接从x4和x2开始处理，跳过原来的x3层
         self.decoder2 = nn.Sequential(
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+            # BasicConv2d(32, 32, 3, padding=1)
+            BasicConv2d(64, 32, 1)
             # BasicConv2d(64, 32, 3, padding=1)  # 输入变为64因为只拼接x4和x2
         )
 
@@ -141,9 +141,21 @@ class Decoder(nn.Module):
         )
 
         self.EfficientBlock = EfficientBlock(64,32, 3, 3, 4, 1)
+        self.ph=nn.Sequential(
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+            BasicConv2d(64, 32, 1),  # 输入保持64因为拼接x2和x1
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+            nn.Conv2d(32,1,1)
+        )
+        # self.conv = nn.Conv2d(channel, 1, 1)
+        # self.upsample_4 = nn.Upsample(scale_factor=4, mode='bilinear', align_corners=True)
         
-        self.conv = nn.Conv2d(channel, 1, 1)
-        self.upsample_4 = nn.Upsample(scale_factor=4, mode='bilinear', align_corners=True)
+        # 新增边缘预测头
+        self.edge_head = nn.Sequential(
+            BasicConv2d(64, 32, 3, padding=1),  # 输入通道改为64
+            nn.Conv2d(32, 1, kernel_size=1),
+            nn.Upsample(scale_factor=4, mode='bilinear', align_corners=True)
+        )
 
     def forward(self, x4, x2x3, x1):
         # 处理x4 (32x11x11 -> 32x22x22)
@@ -155,45 +167,23 @@ class Decoder(nn.Module):
 
         x2x3x4_cat = torch.cat([x4_up, x2x3], dim=1)  # 64x44x44
         #
-        x2x3x4_cat=self.EfficientBlock(x2x3x4_cat) #32x44x44
+        x2x3x4_cat=self.EfficientBlock(x2x3x4_cat) #64x44x44
         
-        x2x3x4_decoder = self.decoder2(x2x3x4_cat)  # 32x88x88
+        x2x3x4_decoder = self.decoder2(x2x3x4_cat)  # 32x88x88   #64
 
         # 连接x2和x1
         x_all_cat = torch.cat([x2x3x4_decoder, x1], 1)  # 64x88x88
         # x1_decoder = self.decoder1(x1_cat)  # 32x88x88
-        x_all_cat=self.EfficientBlock(x_all_cat) #32x88x88
-        x = self.conv(x_all_cat)  # 1x88x88
-        x = self.upsample_4(x)  # 1x352x352
-        return x
-
-class Decode_mid_layer(nn.Module):
-    def __init__(self, channel):
-        super(Decode_mid_layer, self).__init__()
-
-        # 添加用于深度监督的解码层
-        self.decode_x1nor = nn.Sequential(
-            # BasicConv2d(32, 32, 3, padding=1),
-            nn.Conv2d(32, 1, 1),
-            # nn.Upsample(scale_factor=4, mode='bilinear', align_corners=True)
-        )
+        x_all_cat=self.EfficientBlock(x_all_cat) #64x88x88
+        # x = self.conv(x_all_cat)  # 1x88x88
+        # x = self.upsample_4(x)  # 1x352x352
         
-        self.decode_x23nor = nn.Sequential(
-            # BasicConv2d(32, 32, 3, padding=1),
-            nn.Conv2d(32, 1, 1),
-            # nn.Upsample(scale_factor=8, mode='bilinear', align_corners=True)
-        )
+        # 新增边缘预测
+        edge_pred = self.edge_head(x_all_cat)  # 使用完整融合特征
+        x=self.ph(x_all_cat)
         
-        self.decode_x4nor = nn.Sequential(
-            # BasicConv2d(32, 32, 3, padding=1),
-            nn.Conv2d(32, 1, 1),
-            # nn.Upsample(scale_factor=32, mode='bilinear', align_corners=True)
-        )
-    def forward(self, x1, x23, x4):
-        x1 = self.decode_x1nor(x1)
-        x23 = self.decode_x23nor(x23)
-        x4 = self.decode_x4nor(x4)
-        return x1, x23, x4
+        return x, edge_pred
+
 
 class DBANet(nn.Module):
     """
@@ -257,11 +247,10 @@ class DBANet(nn.Module):
         # 解码器，用于将特征图解码为预测结果
         self.Decoder = Decoder(channel)
 
-        #中间层解码器,用于解码中间层特征图
-        self.Decode_mid_layer = Decode_mid_layer(channel=32)
-
         # Sigmoid 激活函数，用于将输出转换为概率值
         self.sigmoid = nn.Sigmoid()
+
+        self.edge_head = nn.Conv2d(64, 1, kernel_size=3, padding=1)  # 新增边缘预测头
 
     def forward(self, x):
         """
@@ -314,17 +303,15 @@ class DBANet(nn.Module):
         x4_nor = self.ChannelNormalization_4(x4_gated) # 32x11x11
 
         # 通过解码器进行解码，得到预测结果
-        prediction = self.Decoder(x4_nor, x2x3_nor, x1_nor) # 1, 352, 352
+        prediction,edge_pred = self.Decoder(x4_nor, x2x3_nor, x1_nor)
 
-        # 分别获取中间层的解码结果,用于深度监督
-        x1_dec, x23_dec, x4_dec = self.Decode_mid_layer(x1_nor, x2x3_nor, x4_nor) # 1, 352, 352
         # 返回原始预测结果和经过 Sigmoid 激活后的预测结果
-        return prediction, self.sigmoid(prediction),x1_dec,self.sigmoid(x1_dec),x23_dec,self.sigmoid(x23_dec),x4_dec,self.sigmoid(x4_dec)  # 1, 352, 352
+        return prediction, self.sigmoid(prediction),edge_pred
+
 if __name__ == '__main__':
     # 实例化 DBANet 模型
+    x= torch.rand(1,3,352,352)
     model = DBANet()
+    y=model(x)
     # 打印模型的结构
     print(model)
-    # 创建一个随机输入张量，尺寸为 [batch_size, 3, 352, 352]
-    x = torch.randn(16, 3, 352, 352)
-    model(x)

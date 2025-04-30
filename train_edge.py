@@ -1,3 +1,5 @@
+'''不包含深度监督的train脚本'''
+'''添加了边缘数据集的train脚本'''
 import time
 import numpy as np
 import torch
@@ -13,16 +15,15 @@ import tqdm
 import pdb, os, argparse
 from datetime import datetime
 
-from utils.loader import get_loader
-# from utils.dataEdge import get_loader
+# from utils.loader import get_loader
+from utils.dataEdge import get_loader
 from utils.utils import clip_gradient, adjust_lr
-from models.blocks.EdgeLoss import EdgeLoss
 # from utils.data import test_dataset
 import utils.pytorch_iou as pytorch_iou
 from utils.data_gt2tenser import test_dataset
-# from utils.data import test_dataset
+# from utils.data import test_dataset6
 import logging
-
+#重构
 
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, message="Overwriting.*")
@@ -32,12 +33,13 @@ data_root = project_root +'/datasets/RS-SOD/'
 formatted_time =datetime.now().strftime('%y%m%d_%H%M')
 
 # ===============================================================
-gpu=1
+gpu=4
 data_type='EORSSD' #['ORSSD','EORSSD','ors-4199','RSISOD']
-from models.pvtmE_Deepsupervision import DBANet as Net
-model_name = '_pvtmE+Deepsupervision_'
+from models.pvtmeEdge import DBANet as Net
+model_name = '_pvtmeEdge_'
 # ===============================================================
 
+# TODO: '''深度监督 + 边缘数据集'''
 
 model = Net()
 
@@ -46,7 +48,7 @@ parser.add_argument('--data_type', type=str, default=data_type, help='choose dat
 parser.add_argument('--gpu', type=int, default=gpu, help='set gpu id')
 parser.add_argument('--epoch', type=int, default=50, help='epoch number')
 parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
-parser.add_argument('--batchsize', type=int, default=16, help='training batch size')
+parser.add_argument('--batchsize', type=int, default=8, help='training batch size')
 parser.add_argument('--trainsize', type=int, default=352, help='training dataset size')
 parser.add_argument('--clip', type=float, default=0.5, help='gradient clipping margin')
 parser.add_argument('--decay_rate', type=float, default=0.1, help='decay rate of learning rate')
@@ -60,15 +62,13 @@ optimizer = torch.optim.Adam(params, opt.lr)
 data_type=opt.data_type
 image_root=data_root+data_type+'_aug/train/images/'
 gt_root=data_root+data_type+'_aug/train/gt/'
-#这里设置选用边缘数据集
-# edge_root=data_root+data_type+'_aug/train/edge/'
-# train_loader = get_loader(image_root, gt_root,edge_root, batchsize=opt.batchsize, trainsize=opt.trainsize)
-train_loader = get_loader(image_root, gt_root, batchsize=opt.batchsize, trainsize=opt.trainsize)
+edge_root=data_root+data_type+'_aug/train/edge/'
+train_loader = get_loader(image_root, gt_root, edge_root, batchsize=opt.batchsize, trainsize=opt.trainsize)
+# train_loader = get_loader(image_root, gt_root, batchsize=opt.batchsize, trainsize=opt.trainsize)
 total_step = len(train_loader)
 
 CE = torch.nn.BCEWithLogitsLoss()
 IOU = pytorch_iou.IOU(size_average = True)
-edge_loss = EdgeLoss()
 
 
 save_name = formatted_time + model_name + data_type
@@ -97,75 +97,28 @@ def get_progress_wrapper(iterable, desc=None, unit=None):
 
 def train(train_loader, model, optimizer, epoch):
     model.train()
-    # 使用 tqdm 包装 train_loader 以显示进度条
-    # train_loader = tqdm.tqdm(train_loader, desc=f'{datetime.now()} Epoch {epoch}/{opt.epoch}', total=len(train_loader), mininterval=20)
-    # train_loader = tqdm.tqdm(train_loader, desc=f'Epoch {epoch}/{opt.epoch}', total=len(train_loader),
-    #                      bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
     wrapped_loader = get_progress_wrapper(train_loader, desc=f'Epoch {epoch}/{opt.epoch}', unit='batch')
     for i, pack in enumerate(wrapped_loader, start=1):
     # for i, pack in enumerate(train_loader, start=1):
         optimizer.zero_grad()
-        images, gts = pack
+        images, gts, edge = pack
         images = Variable(images)
         gts = Variable(gts)
+        edge = Variable(edge)
         images = images.cuda()
         gts = gts.cuda()
+        edge = edge.cuda()
 
-        
-        #================深度监督损失：用 gt图下采样 与 深度图 即使算损失【
-        # sal, sal_sig = model(images)
-    #   352   352       88  88      44   44       11  11
-        pred, pred_sig, x1, x1_sig, x23, x23_sig, x4, x4_sig = model(images)
 
-        #将gt图缩放到88 44 11
-        gt88 = F.interpolate(gts, size=(88, 88), mode='bilinear', align_corners=False)
-        gt44 = F.interpolate(gts, size=(44, 44), mode='bilinear', align_corners=False)
-        gt11 = F.interpolate(gts, size=(11, 11), mode='bilinear', align_corners=False)
-
-        # 计算各层损失
-        loss_main = CE(pred, gts) + IOU(pred_sig, gts)
-        loss_x1 = CE(x1, gt88) + IOU(x1_sig, gt88)  # 使用下采样后的gt88
-        loss_x23 = CE(x23, gt44) + IOU(x23_sig, gt44)  # 使用下采样后的gt44
-        loss_x4 = CE(x4, gt11) + IOU(x4_sig, gt11)  # 使用下采样后的gt11
-
-        # 加权总损失
-        # loss = loss_main + 0.5*loss_x1 + 0.5*loss_x23 + 0.5*loss_x4
-        # loss = loss_main + 0.5*loss_x1 + 0.5*loss_x23 + 0.5*loss_x4  + 0.3*edge_loss(pred_sig, gts) #带上边缘损失
-        # loss = loss_main + 0.6*loss_x1 + 0.4*loss_x23 + 0.3*loss_x4 # 渐进式权重
-        loss = loss_main + 0.6*loss_x1 + 0.4*loss_x23 + 0.3*loss_x4  + 0.3*edge_loss(pred_sig, gts)  #渐进权重带边缘损失
+        #================CE+IOU损失【
+        sal, sal_sig, edge_pred = model(images)
+        # 在train函数中添加边缘感知损失
+        sal_loss = CE(sal, gts) + IOU(sal_sig, gts)
+        edge_loss = CE(edge_pred, edge)
+        loss = sal_loss + 0.5*edge_loss
 
         loss.backward()
-        #=================】
-
-        
-        # #================深度监督损失【
-        # # sal, sal_sig = model(images)
-        # pred, pred_sig, x1, x1_sig, x23, x23_sig, x4, x4_sig = model(images)
-
-        # # 计算各层损失
-        # loss_main = CE(pred, gts) + IOU(pred_sig, gts)
-        # loss_x1 = CE(x1, gts) + IOU(x1_sig, gts)
-        # loss_x23 = CE(x23, gts) + IOU(x23_sig, gts) 
-        # loss_x4 = CE(x4, gts) + IOU(x4_sig, gts)
-
-        # # 加权总损失
-        # # loss = loss_main + 0.5*loss_x1 + 0.5*loss_x23 + 0.5*loss_x4
-        # # loss = loss_main + 0.5*loss_x1 + 0.5*loss_x23 + 0.5*loss_x4  + 0.3*edge_loss(pred_sig, gts) #带上边缘损失
-        # # loss = loss_main + 0.6*loss_x1 + 0.4*loss_x23 + 0.3*loss_x4 # 渐进式权重
-        # loss = loss_main + 0.6*loss_x1 + 0.4*loss_x23 + 0.3*loss_x4  + 0.3*edge_loss(pred_sig, gts)  #渐进权重带边缘损失
-
-        # loss.backward()
         # #=================】
-
-
-        # #================CE+IOU损失【
-        # sal, sal_sig,_,_,_,_,_,_ = model(images)
-        # # 在train函数中添加边缘感知损失
-        # loss = CE(sal, gts) + IOU(sal_sig, gts)
-        # # loss = CE(sal, gts) + IOU(sal_sig, gts) + 0.3*edge_loss(sal_sig, gts) 
-
-        # loss.backward()
-        # # #=================】
 
 
         clip_gradient(optimizer, opt.clip)
@@ -180,10 +133,6 @@ def train(train_loader, model, optimizer, epoch):
         else:
             if i % 20 == 0 or i == total_step:
                 print(f'{current_time} Epoch [{epoch:03d}/{opt.epoch:03d}], Step [{i:04d}/{total_step:04d}], Learning Rate: {opt.lr * opt.decay_rate ** (epoch // opt.decay_epoch)}, Loss: {loss.data:.4f} ')
-
-        # 更新 tqdm 进度条的描述信息 
-        # train_loader.set_description(f'Epoch {epoch}/{opt.epoch}, Loss: {loss.data:.4f}, LR: {opt.lr * opt.decay_rate ** (epoch // opt.decay_epoch):.6f}')
-
 
     if (epoch+1) > 30:
         if not os.path.exists(save_path):
@@ -236,7 +185,7 @@ def test(test_loader, model, epoch, save_path):
             gt2tensor = gt2tensor.cuda()
             
             time_start = time.time()
-            res, sal_sig,_,_,_,_,_,_ = model(image)
+            res, sal_sig, edge_pred = model(image)
             time_end = time.time()
             time_sum += (time_end - time_start)
             

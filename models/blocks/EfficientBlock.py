@@ -111,7 +111,7 @@ class EfficientBlock(nn.Module):
         x3 = self.drop_path(x3)
         
         x_all = x1 + x2 + x3
-        x_all = self.conv(x_all)
+        # x_all = self.conv(x_all)
         x_all = self.conv(x_all) + x1  #0421师兄调整
 
         return x_all
