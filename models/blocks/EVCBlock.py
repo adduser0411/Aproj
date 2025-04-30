@@ -11,6 +11,7 @@ except ImportError:
 from functools import partial
 from timm.models.layers import DropPath, trunc_normal_
 
+# (CFPNet)
 
 # LVC
 class Encoding(nn.Module):

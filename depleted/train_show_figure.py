@@ -1,3 +1,5 @@
+import time
+import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
@@ -14,8 +16,10 @@ from datetime import datetime
 from utils.loader import get_loader
 from utils.utils import clip_gradient, adjust_lr
 from models.blocks.EdgeLoss import EdgeLoss
-
+# from utils.data import test_dataset
 import utils.pytorch_iou as pytorch_iou
+from utils.data_gt2tenser import test_dataset
+import logging
 
 
 import warnings
@@ -26,10 +30,10 @@ data_root = project_root +'/datasets/RS-SOD/'
 formatted_time =datetime.now().strftime('%y%m%d_%H%M')
 
 # ===============================================================
-gpu=5
+gpu=3
 data_type='EORSSD' #['ORSSD','EORSSD','ors-4199','RSISOD']
-from models.pvtm import DBANet as Net
-model_name = '_pvtm_'
+from models.pvtmEfficientBlock import DBANet as Net
+model_name = '_pvtmEfficientBlock_'
 # ===============================================================
 
 
@@ -57,8 +61,7 @@ optimizer = torch.optim.Adam(params, opt.lr)
 data_type=opt.data_type
 image_root=data_root+data_type+'_aug/train/images/'
 gt_root=data_root+data_type+'_aug/train/gt/'
-edge_root=data_root+data_type+'_aug/train/edge/'
-train_loader = get_loader(image_root, gt_root, edge_root,batchsize=opt.batchsize, trainsize=opt.trainsize)
+train_loader = get_loader(image_root, gt_root, batchsize=opt.batchsize, trainsize=opt.trainsize)
 total_step = len(train_loader)
 
 CE = torch.nn.BCEWithLogitsLoss()
@@ -68,6 +71,17 @@ edge_loss = EdgeLoss()
 
 save_name = formatted_time + model_name + data_type
 save_path = './weights/'+ save_name
+
+# 在train_show_figure.py中添加以下全局变量
+best_mae = 1
+best_Fmax = 0
+best_epochM = 0
+best_epochF = 0
+
+# 添加测试数据集路径
+test_image_root = data_root + data_type + '/test/images/'
+test_gt_root = data_root + data_type + '/test/gt/'
+test_loader = test_dataset(test_image_root, test_gt_root, testsize=opt.trainsize)
 
 def train(train_loader, model, optimizer, epoch):
     model.train()
@@ -110,7 +124,95 @@ def train(train_loader, model, optimizer, epoch):
 
 print("Let's go!")
 
-for epoch in tqdm.trange(1, opt.epoch, desc="Training Epochs", unit="epoch",mininterval=20):
-# for epoch in range(1, opt.epoch):
+# 添加Eval_fmeasure函数
+def _eval_pr(y_pred, y, num):
+    if y_pred.sum() == 0:
+        y_pred = 1 - y_pred
+        y = 1 - y
+    prec, recall = torch.zeros(num).cuda(), torch.zeros(num).cuda()
+    thlist = torch.linspace(0, 1 - 1e-10, num).cuda()
+    for i in range(num):
+        y_temp = (y_pred >= thlist[i]).float()
+        tp = (y_temp * y).sum()
+        prec[i], recall[i] = tp / (y_temp.sum() + 1e-20), tp / (y.sum() + 1e-20)
+    return prec, recall
+
+def Eval_fmeasure(pred, gt):
+    beta2 = 0.3
+    pred = pred.cuda()
+    gt = gt.cuda()
+    with torch.no_grad():
+        pred = (pred - torch.min(pred)) / (torch.max(pred) - torch.min(pred) + 1e-20)
+        prec, recall = _eval_pr(pred, gt, 255)
+        f_score = (1 + beta2) * prec * recall / (beta2 * prec + recall)
+        f_score[f_score != f_score] = 0
+    return f_score
+
+# 添加test函数
+def test(test_loader, model, epoch, save_path):
+    global best_mae, best_epochM, best_epochF, best_Fmax
+    print('###TESTING###')
+    model.eval()
+    with torch.no_grad():
+        mae_sum = 0
+        F_value = 0.0
+        time_sum = 0
+        
+        # # 使用tqdm包装测试循环
+        # for i in tqdm.trange(test_loader.size, desc=f'Testing Epoch {epoch}', unit='img'):
+        for i in range(test_loader.size):
+            image, gt, gt2tensor = test_loader.load_data()
+            gt = np.asarray(gt, np.float32)
+            gt /= (gt.max() + 1e-8)
+            image = image.cuda()
+            gt2tensor = gt2tensor.cuda()
+            
+            time_start = time.time()
+            res, sal_sig = model(image)
+            time_end = time.time()
+            time_sum += (time_end - time_start)
+            
+            res = F.upsample(res, size=gt.shape, mode='bilinear', align_corners=False)
+            smap = res.sigmoid()
+            res = res.sigmoid().data.cpu().numpy().squeeze()
+            res = (res - res.min()) / (res.max() - res.min() + 1e-8)
+            mae_sum += np.sum(np.abs(res - gt)) * 1.0 / (gt.shape[0] * gt.shape[1])
+            F_value += Eval_fmeasure(smap, gt2tensor)
+            if i == test_loader.size-1:
+                print('Running time {:.5f}'.format(time_sum/test_loader.size))
+                print('FPS {:.5f}'.format(test_loader.size / time_sum))
+
+        mae = mae_sum / test_loader.size
+        maxF = (F_value/test_loader.size).max().item()
+        
+        if epoch == 1:
+            best_mae = mae
+            best_Fmax = maxF
+            logging.info('FPS {:.5f}'.format(test_loader.size / time_sum))
+        else:
+            if mae < best_mae:
+                best_mae = mae
+                best_epochM = epoch
+                torch.save(model.state_dict(), save_path + 'M.pth')
+            if maxF > best_Fmax:
+                best_Fmax = maxF
+                best_epochF = epoch
+                torch.save(model.state_dict(), save_path + 'F.pth')
+
+        print('###TEST###')
+        print('MAE: ', mae)
+        print('maxF: {:.4f}\t'.format(maxF))
+        print('bestMAE: ', best_mae)
+        print('bestMaxF: ', best_Fmax)
+        print('best_epochMAE: ', best_epochM)
+        print('best_epochmaxF: ', best_epochF)
+        logging.info('#TEST#:Epoch:{} MAE:{} maxF:{}'.format(epoch, mae, maxF))
+        logging.info('#TEST#:best_epochMAE:{} bestMAE:{} '.format(best_epochM, best_mae))
+        logging.info('#TEST#:best_epochmaxF:{} bestmaxF:{} '.format(best_epochF, best_Fmax))
+
+# 修改主训练循环
+for epoch in tqdm.trange(1, opt.epoch, desc="Training Epochs", unit="epoch", mininterval=20):
     adjust_lr(optimizer, opt.lr, epoch, opt.decay_rate, opt.decay_epoch)
     train(train_loader, model, optimizer, epoch)
+    if epoch > 30:  # 与原来的保存条件保持一致
+        test(test_loader, model, epoch, save_path)
