@@ -57,7 +57,8 @@ optimizer = torch.optim.Adam(params, opt.lr)
 data_type=opt.data_type
 image_root=data_root+data_type+'_aug/train/images/'
 gt_root=data_root+data_type+'_aug/train/gt/'
-train_loader = get_loader(image_root, gt_root, batchsize=opt.batchsize, trainsize=opt.trainsize)
+edge_root=data_root+data_type+'_aug/train/edge/'
+train_loader = get_loader(image_root, gt_root, edge_root,batchsize=opt.batchsize, trainsize=opt.trainsize)
 total_step = len(train_loader)
 
 CE = torch.nn.BCEWithLogitsLoss()
